@@ -9,6 +9,9 @@
 //   sysctl debug.amdcppc.pstate=0      request P-state 0 (the boostable one) on every CPU through PStateCtl (legacy path)
 //   sysctl debug.amdcppc.boost=1       clear HWCR.CpbDis on every CPU (0 sets it: no boost)
 //   sysctl debug.amdcppc.cppc=1        enable CPPC on every CPU (cannot be turned off until reset; what Linux amd-pstate does)
+//   sysctl debug.amdcppc.freq           (read) effective clock of every CPU over 200 ms from APERF/MPERF (MPERF counts at the P0
+//                                      reference clock while the core is in C0), plus the hardware P-state status register:
+//                                      tells a slow core apart from a thread that is not getting the CPU
 //   sysctl debug.amdcppc.epp=<0..255>  CPPC request on every CPU: max = highest perf, min = lowest non-linear, desired = 0
 //                                      (autonomous), EPP = value (0 performance .. 128 balanced .. 255 power save). Only when
 //                                      CPPC is enabled.
@@ -34,6 +37,7 @@ int cpu_number(void);
 #define MSR_CPPC_CAP1      0xC00102B0
 #define MSR_CPPC_ENABLE    0xC00102B1
 #define MSR_CPPC_REQ       0xC00102B3
+#define MSR_HW_PSTATE_STAT 0xC0010293
 #define HWCR_CPB_DIS       (1ull << 25)
 
 static const int kMaxCpu = 64;
@@ -123,6 +127,39 @@ static void buildReport()
     }
 }
 
+// effective clock: APERF/MPERF on every CPU, twice, 200 ms apart
+struct FreqSample { bool ok; uint64_t a, m, tsc, hw; };
+static FreqSample gF0[kMaxCpu], gF1[kMaxCpu];
+static FreqSample *gFdst;
+static void sampleAll(void *)
+{
+    int c = cpu_number();
+    if (c < 0 || c >= kMaxCpu) return;
+    FreqSample &f = gFdst[c];
+    f.ok = rd(MSR_APERF, &f.a) && rd(MSR_MPERF, &f.m);
+    if (!rd(MSR_HW_PSTATE_STAT, &f.hw)) f.hw = ~0ull;
+    f.tsc = rdtsc64();
+}
+static char gFreq[1536];
+static void buildFreq()
+{
+    gFdst = gF0;
+    mp_rendezvous_no_intrs(sampleAll, nullptr);
+    IOSleep(200);
+    gFdst = gF1;
+    mp_rendezvous_no_intrs(sampleAll, nullptr);
+    unsigned p0 = gRegs[0].ok[3] ? (unsigned)(gRegs[0].pdef0 & 0xfff) * 5 : 0;
+    size_t n = (size_t)snprintf(gFreq, sizeof(gFreq), "P0 %u MHz; cpu: MHz while busy / busy %% / hwstat", p0);
+    for (int c = 0; c < gNcpu && n + 48 < sizeof(gFreq); c++) {
+        const FreqSample &x = gF0[c], &y = gF1[c];
+        if (!x.ok || !y.ok || y.m <= x.m || y.tsc <= x.tsc) { n += (size_t)snprintf(gFreq + n, sizeof(gFreq) - n, " | %d ?", c); continue; }
+        uint64_t da = y.a - x.a, dm = y.m - x.m, dt = y.tsc - x.tsc;
+        unsigned mhz = (unsigned)(p0 * da / dm), busy = (unsigned)(dm * 100 / dt);
+        n += (size_t)snprintf(gFreq + n, sizeof(gFreq) - n, " | %d %u/%u%%/%llx", c, mhz, busy > 100 ? 100 : busy,
+                              y.hw == ~0ull ? 0ull : (y.hw & 0xffffffffull));
+    }
+}
+
 static IOService *gSelf;
 static IOLock *gLock;
 static void refresh()
@@ -137,6 +174,14 @@ static int report_sysctl SYSCTL_HANDLER_ARGS
     if (gLock) IOLockLock(gLock);
     refresh();
     int e = SYSCTL_OUT(req, gReport, strlen(gReport) + 1);
+    if (gLock) IOLockUnlock(gLock);
+    return e;
+}
+static int freq_sysctl SYSCTL_HANDLER_ARGS
+{
+    if (gLock) IOLockLock(gLock);
+    buildFreq();
+    int e = SYSCTL_OUT(req, gFreq, strlen(gFreq) + 1);
     if (gLock) IOLockUnlock(gLock);
     return e;
 }
@@ -159,6 +204,7 @@ static int write_sysctl SYSCTL_HANDLER_ARGS
 
 SYSCTL_NODE(_debug, OID_AUTO, amdcppc, CTLFLAG_RW | CTLFLAG_LOCKED, 0, "AmdCppc");
 SYSCTL_PROC(_debug_amdcppc, OID_AUTO, report, CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_LOCKED, nullptr, 0, report_sysctl, "A", "registers");
+SYSCTL_PROC(_debug_amdcppc, OID_AUTO, freq, CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_LOCKED, nullptr, 0, freq_sysctl, "A", "effective clock");
 SYSCTL_PROC(_debug_amdcppc, OID_AUTO, pstate, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, nullptr, W_PSTATE, write_sysctl, "I", "request P-state");
 SYSCTL_PROC(_debug_amdcppc, OID_AUTO, boost, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, nullptr, W_BOOST, write_sysctl, "I", "1 = boost allowed");
 SYSCTL_PROC(_debug_amdcppc, OID_AUTO, cppc, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, nullptr, W_CPPC_EN, write_sysctl, "I", "1 = enable CPPC");
@@ -181,6 +227,7 @@ bool AmdCppc::start(IOService *provider)
     IOLog("AmdCppc: %d CPUs: %s\n", gNcpu, gReport);
     sysctl_register_oid(&sysctl__debug_amdcppc);
     sysctl_register_oid(&sysctl__debug_amdcppc_report);
+    sysctl_register_oid(&sysctl__debug_amdcppc_freq);
     sysctl_register_oid(&sysctl__debug_amdcppc_pstate);
     sysctl_register_oid(&sysctl__debug_amdcppc_boost);
     sysctl_register_oid(&sysctl__debug_amdcppc_cppc);
@@ -195,6 +242,7 @@ void AmdCppc::stop(IOService *provider)
     sysctl_unregister_oid(&sysctl__debug_amdcppc_cppc);
     sysctl_unregister_oid(&sysctl__debug_amdcppc_boost);
     sysctl_unregister_oid(&sysctl__debug_amdcppc_pstate);
+    sysctl_unregister_oid(&sysctl__debug_amdcppc_freq);
     sysctl_unregister_oid(&sysctl__debug_amdcppc_report);
     sysctl_unregister_oid(&sysctl__debug_amdcppc);
     gSelf = nullptr;
