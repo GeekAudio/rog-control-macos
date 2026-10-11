@@ -12,12 +12,15 @@
 //   sysctl debug.amdcppc.freq           (read) effective clock of every CPU over 200 ms from APERF/MPERF (MPERF counts at the P0
 //                                      reference clock while the core is in C0), plus the hardware P-state status register:
 //                                      tells a slow core apart from a thread that is not getting the CPU
+//   sysctl debug.amdcppc.temp           (read) Tctl from SMN 0x59800 through the host bridge's index/data pair (0x60 / 0x64),
+//                                      as Linux k10temp does, and the P-state current limit MSR: is the clock held by heat?
 //   sysctl debug.amdcppc.epp=<0..255>  CPPC request on every CPU: max = highest perf, min = lowest non-linear, desired = 0
 //                                      (autonomous), EPP = value (0 performance .. 128 balanced .. 255 power save). Only when
 //                                      CPPC is enabled.
 // Every MSR access goes through rdmsr_carefully / a #GP-safe write path only for registers that were read successfully first.
 #include <IOKit/IOService.h>
 #include <IOKit/IOLib.h>
+#include <IOKit/pci/IOPCIDevice.h>
 #include <sys/sysctl.h>
 #include <i386/proc_reg.h>
 #include <string.h>
@@ -38,6 +41,8 @@ int cpu_number(void);
 #define MSR_CPPC_ENABLE    0xC00102B1
 #define MSR_CPPC_REQ       0xC00102B3
 #define MSR_HW_PSTATE_STAT 0xC0010293
+#define MSR_PSTATE_CUR_LIM 0xC0010061
+#define SMN_THM_TCON_CUR   0x00059800
 #define HWCR_CPB_DIS       (1ull << 25)
 
 static const int kMaxCpu = 64;
@@ -177,6 +182,58 @@ static int report_sysctl SYSCTL_HANDLER_ARGS
     if (gLock) IOLockUnlock(gLock);
     return e;
 }
+// SMN register through the root complex (bus 0, device 0, function 0): index at 0x60, data at 0x64 (Linux amd_smn_read)
+static IOPCIDevice *gRoot;
+static bool smnRead(uint32_t addr, uint32_t *val)
+{
+    if (!gRoot) {
+        OSDictionary *m = IOService::serviceMatching("IOPCIDevice");
+        if (m) {
+            OSIterator *it = IOService::getMatchingServices(m);
+            m->release();
+            if (it) {
+                while (OSObject *o = it->getNextObject()) {
+                    IOPCIDevice *d = OSDynamicCast(IOPCIDevice, o);
+                    if (d && d->getBusNumber() == 0 && d->getDeviceNumber() == 0 && d->getFunctionNumber() == 0 &&
+                        d->configRead16(kIOPCIConfigVendorID) == 0x1022) {
+                        d->retain();
+                        gRoot = d;
+                        break;
+                    }
+                }
+                it->release();
+            }
+        }
+    }
+    if (!gRoot) return false;
+    gRoot->configWrite32(0x60, addr);
+    *val = gRoot->configRead32(0x64);
+    return true;
+}
+static char gTemp[256];
+static void buildTemp()
+{
+    uint32_t v = 0;
+    uint64_t lim = 0;
+    bool limOk = rd(MSR_PSTATE_CUR_LIM, &lim);
+    if (!smnRead(SMN_THM_TCON_CUR, &v)) {
+        snprintf(gTemp, sizeof(gTemp), "no host bridge");
+        return;
+    }
+    int mc = (int)((v >> 21) * 125);                       // millidegrees
+    if (v & (1u << 19)) mc -= 49000;                     // range select (k10temp ZEN_CUR_TEMP_RANGE_SEL_MASK)
+    snprintf(gTemp, sizeof(gTemp), "Tctl %d.%d C (smn %08x); PStateCurLim %s cur %llu max %llu", mc / 1000, (mc % 1000) / 100, v,
+             limOk ? "ok" : "?", limOk ? lim & 7 : 0ull, limOk ? (lim >> 4) & 7 : 0ull);
+}
+static int temp_sysctl SYSCTL_HANDLER_ARGS
+{
+    if (gLock) IOLockLock(gLock);
+    buildTemp();
+    int e = SYSCTL_OUT(req, gTemp, strlen(gTemp) + 1);
+    if (gLock) IOLockUnlock(gLock);
+    return e;
+}
+
 static int freq_sysctl SYSCTL_HANDLER_ARGS
 {
     if (gLock) IOLockLock(gLock);
@@ -205,6 +262,7 @@ static int write_sysctl SYSCTL_HANDLER_ARGS
 SYSCTL_NODE(_debug, OID_AUTO, amdcppc, CTLFLAG_RW | CTLFLAG_LOCKED, 0, "AmdCppc");
 SYSCTL_PROC(_debug_amdcppc, OID_AUTO, report, CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_LOCKED, nullptr, 0, report_sysctl, "A", "registers");
 SYSCTL_PROC(_debug_amdcppc, OID_AUTO, freq, CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_LOCKED, nullptr, 0, freq_sysctl, "A", "effective clock");
+SYSCTL_PROC(_debug_amdcppc, OID_AUTO, temp, CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_LOCKED, nullptr, 0, temp_sysctl, "A", "Tctl");
 SYSCTL_PROC(_debug_amdcppc, OID_AUTO, pstate, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, nullptr, W_PSTATE, write_sysctl, "I", "request P-state");
 SYSCTL_PROC(_debug_amdcppc, OID_AUTO, boost, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, nullptr, W_BOOST, write_sysctl, "I", "1 = boost allowed");
 SYSCTL_PROC(_debug_amdcppc, OID_AUTO, cppc, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, nullptr, W_CPPC_EN, write_sysctl, "I", "1 = enable CPPC");
@@ -228,6 +286,7 @@ bool AmdCppc::start(IOService *provider)
     sysctl_register_oid(&sysctl__debug_amdcppc);
     sysctl_register_oid(&sysctl__debug_amdcppc_report);
     sysctl_register_oid(&sysctl__debug_amdcppc_freq);
+    sysctl_register_oid(&sysctl__debug_amdcppc_temp);
     sysctl_register_oid(&sysctl__debug_amdcppc_pstate);
     sysctl_register_oid(&sysctl__debug_amdcppc_boost);
     sysctl_register_oid(&sysctl__debug_amdcppc_cppc);
@@ -242,9 +301,11 @@ void AmdCppc::stop(IOService *provider)
     sysctl_unregister_oid(&sysctl__debug_amdcppc_cppc);
     sysctl_unregister_oid(&sysctl__debug_amdcppc_boost);
     sysctl_unregister_oid(&sysctl__debug_amdcppc_pstate);
+    sysctl_unregister_oid(&sysctl__debug_amdcppc_temp);
     sysctl_unregister_oid(&sysctl__debug_amdcppc_freq);
     sysctl_unregister_oid(&sysctl__debug_amdcppc_report);
     sysctl_unregister_oid(&sysctl__debug_amdcppc);
     gSelf = nullptr;
+    if (gRoot) { gRoot->release(); gRoot = nullptr; }
     IOService::stop(provider);
 }
