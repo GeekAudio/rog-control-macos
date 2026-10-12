@@ -14,7 +14,7 @@ Taste v2 targets web landing pages and redesigns. It is not the foundation for t
 
 ## Primary panel
 
-The panel retains direct performance mode selection, CPU temperature/package power, CPU/GPU RPM, charge presets, keyboard brightness, Slash settings, and software OLED dimming. These use compact rows without section cards or a page-sized scroll area. Manual exposes power sliders, fan base, and Apply directly under the modes. Slider changes remain rounded to integer watts without drawing a tick for every watt.
+The panel retains direct performance mode selection, CPU temperature/package power, CPU/GPU RPM, charge presets, keyboard brightness, and Slash settings. These use compact rows without section cards or a page-sized scroll area. Manual exposes power sliders, fan base, and Apply directly under the modes. Slider changes remain rounded to integer watts without drawing a tick for every watt.
 
 Hardware-confirmed mode, charge limit, keyboard brightness, and Slash controls are distinguished from saved preferences. Profile, charging, and lighting failures appear beside the relevant controls. Manual changes are marked as not applied until saved. Changing fan base updates the reference curve without claiming that the preview has been applied.
 

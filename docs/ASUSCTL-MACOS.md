@@ -157,10 +157,10 @@ for checking what `WMNB` does with each device id on this BIOS, and for the EC f
   function 0x14, AppleBacklightDisplay gets brightness / linear-brightness) and `nvKmsSetBacklight` returns success, but the
   panel does not change: the BIOS reports an AUX (DPCD) backlight (WMAA source 3) and the EC level (GBLD 0..200) is not the
   OLED's. NullMoth's framebuffer has no gamma table either (`setGammaTable` / `setCLUTWithEntries` are stubs in
-  nvrm-fb.cpp), so CoreGraphics transfer tables cannot dim it. RogControl dims the built-in display in software: it reads
-  `DisplayServicesGetBrightness` every 0.1 s and puts a black, click-through window (level assistiveTechHigh, all spaces,
-  excluded from screenshots) over that screen with alpha `1 - (0.15 + 0.85 * brightness)`. The slider and Fn+F7 / Fn+F8
-  (`debug.asuswmi.key=0x20` / `0x10` moved the value) drive it; "Dim the built-in OLED in software" turns it off.
+  nvrm-fb.cpp), so CoreGraphics transfer tables cannot dim it. Until `NVRMEdpBL` existed, RogControl dimmed the built-in
+  display in software (a black, click-through window whose alpha followed `DisplayServicesGetBrightness`); that workaround was
+  **removed from RogControl on 2026-10-12** because the real brightness works now (see the findings below). The slider and
+  Fn+F7 / Fn+F8 (`debug.asuswmi.key=0x20` / `0x10` moved the value) set the value `NVRMEdpBL` writes over AUX.
   NBCI on this BIOS: function 0 bitmap 0x00110001 (0, 0x10, 0x14); 0x14 = display 0x8000A450, 0x200, 0, 0, 5, 1, 1000,
   50, 1000, 11 levels 50..1000, 0, 11 levels 100..1000.
 
@@ -170,6 +170,6 @@ for checking what `WMNB` does with each device id on this BIOS, and for the EC f
   only control is DPCD `0x722/0x723` in mode `0x721 = 2`. RM's `SET_BACKLIGHT_BRIGHTNESS` (GSP firmware) returns success
   and leaves `0x721 = 0`. That is why `nvKmsSetBacklight` "worked" and the panel did not change, and it is not an EC or
   ACPI matter. Writing the registers by hand dims the panel (confirmed by eye).
-* RogControl's `Dimmer` (software overlay, above) is therefore a **workaround** (obsolete since `NVRMEdpBL` works, 2026-10-12) and stacks on top of the real brightness
-  once `NVRMEdpBL` loads: turn "Dim the built-in OLED in software" off then. Details, evidence, fix, install and undo:
+* RogControl's `Dimmer` (the software overlay described above) was a workaround for this and is gone (removed 2026-10-12, since
+  `NVRMEdpBL` works). Details, evidence, fix, install and undo:
   [OLED-BRIGHTNESS-DPCD.md](OLED-BRIGHTNESS-DPCD.md). `AsusWmi` keeps leaving the EC level alone on the brightness keys.
