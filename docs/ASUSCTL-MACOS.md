@@ -1,5 +1,8 @@
 # asusctl / ROG Control Center on macOS
 
+> **Status 2026-10-12 (owner-confirmed):** profiles, power limits, fan curves and speeds, charge limit, keyboard light, Slash and the
+> RogControl app all work on the reference unit. "built, untested" labels in older sections below are history; the table is updated.
+
 [asusctl](https://github.com/opengamingcollective/asusctl) (formerly <https://gitlab.com/asus-linux/asusctl>, by Luke Jones
 and the asus-linux contributors, **MPL-2.0**) is the Linux daemon (`asusd`), CLI (`asusctl`) and GUI (`rog-control-center`)
 for ASUS ROG laptops. It does not talk to the hardware itself: it drives the Linux kernel drivers `asus-wmi` and
@@ -19,17 +22,17 @@ highest performance, so the limit sits in the platform. The profile and the PPT 
 
 | asusctl feature | Linux path | macOS route | Status |
 |---|---|---|---|
-| Platform profile (Silent / Performance / Turbo) | `asus-wmi` throttle_thermal_policy, WMI dev `0x00120075` (0 balanced = Armoury Crate "Performance", 1 turbo, 2 silent) | AsusWmi user client, RogControl | built, untested |
-| CPU power limits SPL / SPPT / FPPT ("Manual") | `asus-armoury` ppt_*; GA403WM: AC 15-80 / 25-80 / 35-80 W, battery 15-35 / 25-35 / 35-65 W; `requires_fan_curve` | AsusWmi checks the range for the current source (ACPI `ACAD._PSR`) and refuses limits until a custom fan curve is active (EBUSY / `kIOReturnNotPermitted`), as asus-armoury does | built, untested |
-| Fan curves | dev `0x00110024` (CPU) / `0x00110025` (GPU); DSTS with arg1 = profile returns 8 temps + 8 duties; DEVS packs them into 4 dwords | read and write in AsusWmi (temps rising, duties not falling, top point >= 40 %); RogControl "Manual" uses a chosen firmware curve (Silent / Performance / Turbo) as the custom curve; no curve editor yet | built, untested |
-| Fan speeds | dev `0x00110013` / `0x00110014`, value x 100 rpm | RogControl | built, untested |
-| Battery charge limit | dev `0x00120057` | RogControl 60 / 80 / 100 %, re-applied at start | built, untested |
-| Profile per power source | asusd | RogControl keeps one setting set for AC and one for battery and re-applies on IOPowerSources changes and at login | built, untested |
+| Platform profile (Silent / Performance / Turbo) | `asus-wmi` throttle_thermal_policy, WMI dev `0x00120075` (0 balanced = Armoury Crate "Performance", 1 turbo, 2 silent) | AsusWmi user client, RogControl | ✅ works (owner-confirmed 2026-10-12) |
+| CPU power limits SPL / SPPT / FPPT ("Manual") | `asus-armoury` ppt_*; GA403WM: AC 15-80 / 25-80 / 35-80 W, battery 15-35 / 25-35 / 35-65 W; `requires_fan_curve` | AsusWmi checks the range for the current source (ACPI `ACAD._PSR`) and refuses limits until a custom fan curve is active (EBUSY / `kIOReturnNotPermitted`), as asus-armoury does | ✅ works (owner-confirmed 2026-10-12) |
+| Fan curves | dev `0x00110024` (CPU) / `0x00110025` (GPU); DSTS with arg1 = profile returns 8 temps + 8 duties; DEVS packs them into 4 dwords | read and write in AsusWmi (temps rising, duties not falling, top point >= 40 %); RogControl "Manual" uses a chosen firmware curve (Silent / Performance / Turbo) as the custom curve; no curve editor yet | ✅ works (owner-confirmed 2026-10-12) |
+| Fan speeds | dev `0x00110013` / `0x00110014`, value x 100 rpm | RogControl | ✅ works (owner-confirmed 2026-10-12) |
+| Battery charge limit | dev `0x00120057` | RogControl 60 / 80 / 100 %, re-applied at start | ✅ works (owner-confirmed 2026-10-12) |
+| Profile per power source | asusd | RogControl keeps one setting set for AC and one for battery and re-applies on IOPowerSources changes and at login | ✅ works (owner-confirmed 2026-10-12) |
 | NVIDIA dynamic boost / temp target / TGP | dev `0x001200C0` / `0x001200C2` / `0x00120099` | base TGP shown (55 W); no writes: they notify the NVIDIA ACPI device and the NullMoth driver decides the GPU clocks | read only |
 | GPU MUX, dGPU disable | dev `0x00090016` / `0x00090020` | shown; **do not write** from macOS: the NVIDIA driver is running | read only |
 | Keyboard LEDs (Aura) | USB HID, N-KEY device `0b05:19b6`; GA403 boards: one zone, Static/Breathe/Pulse/Rainbow | user space HID feature reports, no kext needed | todo |
 | Panel overdrive | dev `0x00050019` | WMI | todo (absent in this BIOS's DSTS list) |
-| GUI (rog-control-center) | Slint app over D-Bus | `macos/RogControl` menu bar app, user client (no sudo; admin or console user) | built, untested |
+| GUI (rog-control-center) | Slint app over D-Bus | `macos/RogControl` menu bar app, user client (no sudo; admin or console user) | ✅ works (owner-confirmed 2026-10-12) |
 
 ## RogControl
 
@@ -152,6 +155,6 @@ for checking what `WMNB` does with each device id on this BIOS, and for the EC f
   only control is DPCD `0x722/0x723` in mode `0x721 = 2`. RM's `SET_BACKLIGHT_BRIGHTNESS` (GSP firmware) returns success
   and leaves `0x721 = 0`. That is why `nvKmsSetBacklight` "worked" and the panel did not change, and it is not an EC or
   ACPI matter. Writing the registers by hand dims the panel (confirmed by eye).
-* RogControl's `Dimmer` (software overlay, above) is therefore a **workaround** and stacks on top of the real brightness
+* RogControl's `Dimmer` (software overlay, above) is therefore a **workaround** (obsolete since `NVRMEdpBL` works, 2026-10-12) and stacks on top of the real brightness
   once `NVRMEdpBL` loads: turn "Dim the built-in OLED in software" off then. Details, evidence, fix, install and undo:
   [OLED-BRIGHTNESS-DPCD.md](OLED-BRIGHTNESS-DPCD.md). `AsusWmi` keeps leaving the EC level alone on the brightness keys.
