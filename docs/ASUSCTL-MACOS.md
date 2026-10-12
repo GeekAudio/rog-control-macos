@@ -135,3 +135,13 @@ for checking what `WMNB` does with each device id on this BIOS, and for the EC f
   RogControl stores both and sends them at start and after wake.
 * Build: `IOHIDDescriptorParser.h` includes `<MacTypes.h>` when `__has_include` finds one, which pulled the host SDK's
   user-space header in; `scripts/build.sh` now compiles with `-nostdlibinc`.
+* **OLED brightness**: the brightness slider appears with NullMoth 1.14 (NVKMS registers the backlight from NBCI `_DSM`
+  function 0x14, AppleBacklightDisplay gets brightness / linear-brightness) and `nvKmsSetBacklight` returns success, but the
+  panel does not change: the BIOS reports an AUX (DPCD) backlight (WMAA source 3) and the EC level (GBLD 0..200) is not the
+  OLED's. NullMoth's framebuffer has no gamma table either (`setGammaTable` / `setCLUTWithEntries` are stubs in
+  nvrm-fb.cpp), so CoreGraphics transfer tables cannot dim it. RogControl dims the built-in display in software: it reads
+  `DisplayServicesGetBrightness` every 0.1 s and puts a black, click-through window (level assistiveTechHigh, all spaces,
+  excluded from screenshots) over that screen with alpha `1 - (0.15 + 0.85 * brightness)`. The slider and Fn+F7 / Fn+F8
+  (`debug.asuswmi.key=0x20` / `0x10` moved the value) drive it; "Dim the built-in OLED in software" turns it off.
+  NBCI on this BIOS: function 0 bitmap 0x00110001 (0, 0x10, 0x14); 0x14 = display 0x8000A450, 0x200, 0, 0, 5, 1, 1000,
+  50, 1000, 11 levels 50..1000, 0, 11 levels 100..1000.

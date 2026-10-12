@@ -223,6 +223,7 @@ final class RogModel: ObservableObject {
     @Published var charge = UserDefaults.standard.object(forKey: "charge") == nil ? 100 : UserDefaults.standard.integer(forKey: "charge")
     @Published var kbd = UserDefaults.standard.object(forKey: "kbd") == nil ? 2 : UserDefaults.standard.integer(forKey: "kbd")
     @Published var slash = UserDefaults.standard.object(forKey: "slash") == nil ? Slash() : Slash(packed: UserDefaults.standard.integer(forKey: "slash"))
+    @Published var dim = UserDefaults.standard.object(forKey: "dim") as? Bool ?? true
     @Published var message = ""
     @Published var loginEnabled = LoginItem.enabled
     @Published var curve: [UInt8]? = nil       // CPU fan curve of the Manual fan base, for the small chart
@@ -230,6 +231,7 @@ final class RogModel: ObservableObject {
     private var timer: Timer?
     private var lastAC: Bool?
     var visible = false { didSet { schedule() } }
+    let dimmer = Dimmer()
 
     init() {
         refresh()
@@ -242,6 +244,7 @@ final class RogModel: ObservableObject {
         settings = SourceSettings.load(ac: st.ac)
         applyAll(reason: "start")
         applyLighting()
+        dimmer.enabled = dim
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             // the keyboard comes back from sleep with its own defaults: give it a moment, then send ours again
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { MainActor.assumeIsolated { self?.applyLighting() } }
@@ -310,6 +313,10 @@ final class RogModel: ObservableObject {
         if Asus.set(.slash, slash.packed) != KERN_SUCCESS { errs.append("Slash refused") }
         st = Asus.state()
         if !errs.isEmpty { message = errs.joined(separator: "; ") }
+    }
+    func setDim(_ on: Bool) {
+        dim = on; UserDefaults.standard.set(on, forKey: "dim")
+        dimmer.enabled = on
     }
     func setKbd(_ v: Int) {
         kbd = v; UserDefaults.standard.set(v, forKey: "kbd")
@@ -479,6 +486,10 @@ struct ContentView: View {
                 }
             }
 
+            Toggle("Dim the built-in OLED in software", isOn: Binding(get: { m.dim }, set: { m.setDim($0) }))
+                .toggleStyle(.switch).controlSize(.mini).font(.system(size: 12))
+                .help("Follows the brightness slider and Fn+F7 / Fn+F8: NullMoth's backlight control does not reach this panel")
+
             Text("Battery").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
             HStack(spacing: 6) {
                 ForEach([60, 80, 100], id: \.self) { v in
@@ -514,6 +525,65 @@ struct ContentView: View {
         if m.st.dgpu != ~0 && m.st.dgpu & 1 != 0 { s += ", dGPU disabled" }
         if m.st.baseTgp > 0 { s += ", base TGP \(m.st.baseTgp) W" }
         return s
+    }
+}
+
+// ---- software dimming of the built-in OLED -----------------------------------------------------------------------------------
+// NullMoth sets the panel brightness through NVKMS (the BIOS reports an AUX backlight), which this Samsung OLED does not follow,
+// and its framebuffer has no gamma table (setGammaTable is a stub), so the brightness slider and Fn+F7 / Fn+F8 would move
+// without effect. Dimmer follows the built-in display's brightness (DisplayServices: the value the slider and the keys set)
+// and darkens that screen with a black, click-through window above everything else. An OLED shows black as off pixels, so this
+// lowers the light (and the power) as a backlight would; only the pointer stays at full brightness.
+@MainActor
+final class Dimmer {
+    typealias GetBrightness = @convention(c) (CGDirectDisplayID, UnsafeMutablePointer<Float>) -> Int32
+    private static let get: GetBrightness? = {
+        guard let h = dlopen("/System/Library/PrivateFrameworks/DisplayServices.framework/DisplayServices", RTLD_NOW),
+              let f = dlsym(h, "DisplayServicesGetBrightness") else { return nil }
+        return unsafeBitCast(f, to: GetBrightness.self)
+    }()
+    static let floor: CGFloat = 0.15            // pixel scale at brightness 0 (about 2 % of the light), so the screen stays usable
+    private var win: NSWindow?
+    private var timer: Timer?
+    var enabled = false {
+        didSet {
+            timer?.invalidate(); timer = nil
+            if enabled {
+                timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.tick() } }
+                tick()
+            } else { win?.orderOut(nil) }
+        }
+    }
+
+    // brightness is perceptual (the slider), pixel values are gamma encoded: scaling them linearly by it is close to right
+    func tick() {
+        guard enabled, let get = Dimmer.get,
+              let screen = NSScreen.screens.first(where: {
+                  ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber).map { CGDisplayIsBuiltin($0.uint32Value) != 0 } ?? false }),
+              let id = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+        else { win?.orderOut(nil); return }
+        var b: Float = 1
+        guard get(id, &b) == 0 else { win?.orderOut(nil); return }
+        let alpha = 1 - (Dimmer.floor + (1 - Dimmer.floor) * CGFloat(min(max(b, 0), 1)))
+        if alpha < 0.005 { win?.orderOut(nil); return }
+        let w = win ?? make()
+        if w.frame != screen.frame { w.setFrame(screen.frame, display: false) }
+        if abs(w.alphaValue - alpha) > 0.001 { w.alphaValue = alpha }
+        if !w.isVisible { w.orderFrontRegardless() }
+    }
+
+    private func make() -> NSWindow {
+        let w = NSWindow(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: false)
+        w.isReleasedWhenClosed = false
+        w.backgroundColor = .black
+        w.isOpaque = false
+        w.hasShadow = false
+        w.ignoresMouseEvents = true
+        w.sharingType = .none                   // not in screenshots and recordings
+        w.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.assistiveTechHighWindow)))   // above the menu bar, Dock, menus
+        w.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
+        win = w
+        return w
     }
 }
 
