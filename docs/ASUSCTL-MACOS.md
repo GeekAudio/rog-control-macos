@@ -107,3 +107,31 @@ for checking what `WMNB` does with each device id on this BIOS, and for the EC f
   (0xC8) on EC fields GBLD / SBLD. AsusWmi uses it (`debug.asuswmi.backlight`, RogControl slider) and steps it on the
   brightness keys (BRTN sends Notify 0x86 / 0x87 to VGA.LCD and PEGP.EDP1; AsusWmi listens on EDP1). The BIOS reports
   brightness source 3 (AUX), so whether the EC level reaches the OLED is the open question.
+
+## Findings 2026-10-11 night (NullMoth 1.14, keyboard light, Slash)
+
+* **Panel brightness**: the EC level answers the open question above: it reads 0 / 200 while the panel is lit, so it is not
+  the OLED's brightness (source 3 = AUX: the GPU driver owns it). NullMoth 1.14 has panel backlight support: NVRM answers
+  the NBCI `_DSM` (functions 0, 0x10) and `_DOD` on PEGP, NVKMS registers the backlight (`backlight registered: gpu 0x6200
+  display 0x200 at 100%`), NVRMFB publishes a `backlight` handler, and IOGraphics makes the panel an AppleBacklightDisplay
+  with `brightness` / `linear-brightness`. `DisplayServicesSetBrightness` works (no "setting failed" from NVRMFB). Whether
+  the OLED follows it is to be checked by eye. AsusWmi no longer steps the EC level on the brightness keys.
+* **Brightness keys**: Fn+F7 / F8 = EC queries `_Q18` / `_Q17` -> `QLIB (0x26 / 0x27)` -> `BRTN (0x87 / 0x86)` when
+  `OSYS >= 0x07DC` (OSYS defaults to 0x07DF) -> Notify on VGA.LCD and PEGP.EDP1. BrightnessKeys (loaded) listens on EDP1
+  and turns them into macOS brightness keys. WMNB `DEVS 0x00100021, code` calls `EC0.SKEY (code)`, the same dispatcher:
+  `sudo sysctl debug.asuswmi.key=0x20` (up) / `0x10` (down) emulates the keys for testing.
+* **Hotkeys through ATKD**: `IANE (code)` queues a code and sends Notify (ATKD, 0xFF); `_WED (0xFF)` -> `GANQ` returns the
+  queued codes (Ones when empty). Seen in the DSDT: 0xC4 / 0xC5 keyboard light up / down (only when `KBLC & 0x80`), 0xB3
+  (Fn+F4), 0xAE (Fn+F5), 0x6B, 0x40 / 0x43 / 0x45 / 0x0A, 0x1A. AsusWmi handles 0xC4 / 0xC5 / 0xAE / 0xB3 and logs every
+  code in `asus-log` ("key xx").
+* **Keyboard light and Slash**: no WMI device for either (0x00050021 is not in the DSDT). Both are HID feature reports on
+  the N-KEY keyboard, USB 0b05:19b6 ("ITE Device(8910)", one interface, AppleUserHIDDevice): report 0x5A (62 bytes) =
+  keyboard light `5A BA C5 C4 <0..3>` after `5A "ASUS Tech.Inc."` (G-Helper Aura.DirectBrightness, Linux hid-asus);
+  report 0x5D (127 bytes) = Slash (G-Helper `SlashDeviceAura`: wake up `"ASUS Tech.Inc."`, `C2`, `D1 01 00 01`; enable
+  `D8 02 00 01 00|80`; init `D7 00 00 01 AC`, `D2 02 01 08 AB`; mode `D3 04 00 0C 01 <code> 02 42 03 13 04 11 05 12 06 13`;
+  options `D3 03 01 08 AB FF 01 01 06 <bright*85> FF <interval>`; save `D4 00 00 01 AB`). User space cannot open the
+  keyboard without Input Monitoring (IOHIDDeviceOpen 0xe00002e2), so AsusWmi sends them from the kernel
+  (`IOHIDDevice::setReport`): `debug.asuswmi.kbd`, `debug.asuswmi.slash`, ABI 3 (`ASUS_SET_KBD`, `ASUS_SET_SLASH`).
+  RogControl stores both and sends them at start and after wake.
+* Build: `IOHIDDescriptorParser.h` includes `<MacTypes.h>` when `__has_include` finds one, which pulled the host SDK's
+  user-space header in; `scripts/build.sh` now compiles with `-nostdlibinc`.

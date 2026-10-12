@@ -28,12 +28,24 @@ struct AsusState {
     var gpuMux: UInt32 = ~0, dgpu: UInt32 = ~0, baseTgp = 0
     var backlight: Int? = nil, backlightMax = 0
     var batDesign = 0, batFull = 0, batNow = 0, batState = 0, batRate = 0   // mAh, mAh, mAh, _BST state, mA
+    var kbd: Int? = nil, slash: Int? = nil, hid = false                   // ABI 3: keyboard light 0..3, Slash (packed), N-KEY seen
+    var lighting = false                                                    // the kext has the keyboard / Slash settings
+}
+
+// Slash lighting (asuswmi_abi.h ASUS_SLASH_*): mode index, brightness 0..3 (0 = off), interval 0..5
+struct Slash: Equatable {
+    static let modes = ["Static", "Bounce", "Slash", "Loading", "Bit Stream", "Transmission", "Flow", "Flux",
+                        "Phantom", "Spectrum", "Hazard", "Interfacing", "Ramp", "Game Over", "Start", "Buzzer"]
+    var mode = 2, bright = 2, interval = 0
+    var packed: Int { mode | (bright << 8) | (interval << 12) }
+    init(mode: Int = 2, bright: Int = 2, interval: Int = 0) { self.mode = mode; self.bright = bright; self.interval = interval }
+    init(packed v: Int) { mode = v & 0xff; bright = (v >> 8) & 0xf; interval = (v >> 12) & 0xf }
 }
 
 enum Asus {
-    static let abi: UInt32 = 2
+    static let abi: UInt32 = 3
     enum Sel: UInt32 { case state = 0, set = 1, fanRead = 2, fanWrite = 3, fanReset = 4 }
-    enum What: UInt64 { case profile = 1, spl = 2, sppt = 3, fppt = 4, charge = 5, backlight = 6 }
+    enum What: UInt64 { case profile = 1, spl = 2, sppt = 3, fppt = 4, charge = 5, backlight = 6, kbd = 7, slash = 8 }
 
     static func open() -> io_connect_t? {
         let svc = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AsusWmi"))
@@ -63,10 +75,10 @@ enum Asus {
 
     static func state() -> AsusState {
         var s = AsusState()
-        let (kr, b) = call(.state, outCount: 24 * 4)
+        let (kr, b) = call(.state, outCount: 27 * 4)
         guard kr == KERN_SUCCESS, b.count >= 24 * 4 else { return s }
         func w(_ i: Int) -> UInt32 { b.withUnsafeBytes { $0.load(fromByteOffset: i * 4, as: UInt32.self) } }
-        guard w(0) >= 1, w(0) <= abi else { return s }          // ABI 1 (no backlight / battery words) still works
+        guard w(0) >= 1, w(0) <= abi else { return s }          // ABI 1 / 2 (fewer words) still work
         s.present = true
         s.ac = w(1) & 1 != 0; s.fanCustom = w(1) & 2 != 0
         s.profile = w(2) == ~0 ? nil : Int(w(2)); s.charge = w(3) == ~0 ? nil : Int(w(3))
@@ -78,6 +90,9 @@ enum Asus {
         s.backlight = w(18) == ~0 ? nil : Int(w(18)); s.backlightMax = Int(w(19))
         s.batDesign = Int(w(20)); s.batFull = Int(w(21)); s.batNow = Int(w(22))
         s.batState = Int(w(23) & 0xff); s.batRate = Int(w(23) >> 8)
+        guard w(0) >= 3, b.count >= 27 * 4 else { return s }
+        s.lighting = true
+        s.kbd = w(24) == ~0 ? nil : Int(w(24)); s.slash = w(25) == ~0 ? nil : Int(w(25)); s.hid = w(26) != 0
         return s
     }
 
@@ -206,6 +221,8 @@ final class RogModel: ObservableObject {
     @Published var watts: Double?
     @Published var settings = SourceSettings.load(ac: true)
     @Published var charge = UserDefaults.standard.object(forKey: "charge") == nil ? 100 : UserDefaults.standard.integer(forKey: "charge")
+    @Published var kbd = UserDefaults.standard.object(forKey: "kbd") == nil ? 2 : UserDefaults.standard.integer(forKey: "kbd")
+    @Published var slash = UserDefaults.standard.object(forKey: "slash") == nil ? Slash() : Slash(packed: UserDefaults.standard.integer(forKey: "slash"))
     @Published var message = ""
     @Published var loginEnabled = LoginItem.enabled
     @Published var curve: [UInt8]? = nil       // CPU fan curve of the Manual fan base, for the small chart
@@ -224,6 +241,11 @@ final class RogModel: ObservableObject {
         if st.present, d.object(forKey: "charge") == nil, let c = st.charge, (20...100).contains(c) { charge = c; d.set(c, forKey: "charge") }
         settings = SourceSettings.load(ac: st.ac)
         applyAll(reason: "start")
+        applyLighting()
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            // the keyboard comes back from sleep with its own defaults: give it a moment, then send ours again
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { MainActor.assumeIsolated { self?.applyLighting() } }
+        }
         let ctx = Unmanaged.passUnretained(self).toOpaque()
         if let src = IOPSNotificationCreateRunLoopSource({ ctx in
             guard let ctx else { return }
@@ -281,8 +303,24 @@ final class RogModel: ObservableObject {
         message = Asus.set(.charge, v) == KERN_SUCCESS ? "charge limit \(v) %" : "charge limit refused"
         st = Asus.state()
     }
-    func setBacklight(_ v: Int) {
-        if Asus.set(.backlight, v) == KERN_SUCCESS { st.backlight = v } else { message = "brightness refused" }
+    func applyLighting() {
+        guard st.lighting else { return }
+        var errs: [String] = []
+        if Asus.set(.kbd, kbd) != KERN_SUCCESS { errs.append("keyboard light refused") }
+        if Asus.set(.slash, slash.packed) != KERN_SUCCESS { errs.append("Slash refused") }
+        st = Asus.state()
+        if !errs.isEmpty { message = errs.joined(separator: "; ") }
+    }
+    func setKbd(_ v: Int) {
+        kbd = v; UserDefaults.standard.set(v, forKey: "kbd")
+        message = Asus.set(.kbd, v) == KERN_SUCCESS ? "keyboard light \(v)" : "keyboard light refused (keyboard not found?)"
+        st = Asus.state()
+    }
+    func setSlash(_ s: Slash) {
+        slash = s; UserDefaults.standard.set(s.packed, forKey: "slash")
+        message = Asus.set(.slash, s.packed) == KERN_SUCCESS ? (s.bright == 0 ? "Slash off" : "Slash \(Slash.modes[s.mode])")
+                                                             : "Slash refused (keyboard not found?)"
+        st = Asus.state()
     }
     var batteryLine: String {
         guard st.batDesign > 5 else { return "battery data not available from the firmware" }
@@ -398,15 +436,47 @@ struct ContentView: View {
             }
             if let c = m.curve { CurveChart(c: c) }
 
-            if m.st.backlightMax > 0 {
+            if m.st.lighting {
+                Text("Lighting").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
                 HStack(spacing: 6) {
-                    Image(systemName: "sun.min").font(.system(size: 11)).foregroundStyle(.secondary)
-                    Slider(value: Binding(get: { Double(m.st.backlight ?? 0) }, set: { m.setBacklight(Int($0.rounded())) }),
-                           in: 0...Double(m.st.backlightMax))
-                        .controlSize(.small)
-                    Image(systemName: "sun.max").font(.system(size: 11)).foregroundStyle(.secondary)
+                    Image(systemName: "keyboard").font(.system(size: 11)).foregroundStyle(.secondary)
+                    ForEach(0...3, id: \.self) { v in
+                        Button(v == 0 ? "Off" : "\(v)") { m.setKbd(v) }
+                            .controlSize(.small).buttonStyle(.bordered)
+                            .tint(m.kbd == v ? .accentColor : nil)
+                    }
+                    Spacer()
                 }
-                .help("Panel brightness (EC, through the NVIDIA WMI-EC method; the brightness keys step it too)")
+                .help("Keyboard backlight (Fn+F2 / Fn+F3 step it)")
+                HStack(spacing: 6) {
+                    Toggle("Slash", isOn: Binding(get: { m.slash.bright > 0 }, set: { on in
+                        var s = m.slash; s.bright = on ? (UserDefaults.standard.object(forKey: "slash.on.bright") as? Int ?? 2) : 0
+                        if !on { UserDefaults.standard.set(m.slash.bright, forKey: "slash.on.bright") }
+                        m.setSlash(s)
+                    }))
+                    .toggleStyle(.switch).controlSize(.mini).font(.system(size: 12))
+                    Picker("", selection: Binding(get: { m.slash.mode }, set: { v in var s = m.slash; s.mode = v; if s.bright == 0 { s.bright = 2 }; m.setSlash(s) })) {
+                        ForEach(0..<Slash.modes.count, id: \.self) { Text(Slash.modes[$0]).tag($0) }
+                    }
+                    .labelsHidden().controlSize(.small).frame(maxWidth: 130)
+                    Spacer()
+                }
+                .help("Slash lighting on the lid (Fn+F4 switches it on / off)")
+                if m.slash.bright > 0 {
+                    HStack(spacing: 6) {
+                        Text("brightness").font(.system(size: 11)).foregroundStyle(.secondary)
+                        Picker("", selection: Binding(get: { m.slash.bright }, set: { v in var s = m.slash; s.bright = v; m.setSlash(s) })) {
+                            ForEach(1...3, id: \.self) { Text("\($0)").tag($0) }
+                        }
+                        .pickerStyle(.segmented).labelsHidden().controlSize(.small).frame(width: 90)
+                        Text("interval").font(.system(size: 11)).foregroundStyle(.secondary)
+                        Picker("", selection: Binding(get: { m.slash.interval }, set: { v in var s = m.slash; s.interval = v; m.setSlash(s) })) {
+                            ForEach(0...5, id: \.self) { Text("\($0)").tag($0) }
+                        }
+                        .labelsHidden().controlSize(.small).frame(width: 52)
+                        Spacer()
+                    }
+                }
             }
 
             Text("Battery").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)

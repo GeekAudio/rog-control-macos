@@ -5,7 +5,7 @@
 #ifndef ASUSWMI_ABI_H
 #define ASUSWMI_ABI_H
 
-#define ASUSWMI_ABI_VERSION 2
+#define ASUSWMI_ABI_VERSION 3
 
 enum {
     kAsusUcGetState  = 0,   // out: struct, uint32_t[ASUS_ST_COUNT]
@@ -22,7 +22,9 @@ enum {                      // kAsusUcSet "what"
     ASUS_SET_SPPT    = 3,   // W, PL2 slow
     ASUS_SET_FPPT    = 4,   // W, PL3 fast
     ASUS_SET_CHARGE  = 5,   // %, battery charge end 20..100
-    ASUS_SET_BACKLIGHT = 6, // panel brightness 0..ASUS_ST_BACKLIGHT_MAX (EC, through the NVIDIA WMI-EC method AWMI.WMAA)
+    ASUS_SET_BACKLIGHT = 6, // EC brightness level 0..ASUS_ST_BACKLIGHT_MAX (AWMI.WMAA); not the OLED's: that is NullMoth's AUX path
+    ASUS_SET_KBD     = 7,   // keyboard backlight 0..3 (N-KEY HID feature report 0x5A)
+    ASUS_SET_SLASH   = 8,   // Slash lighting: ASUS_SLASH_PACK(mode, brightness, interval); brightness 0 = off
 };
 
 enum {                      // kAsusUcGetState words
@@ -47,10 +49,22 @@ enum {                      // kAsusUcGetState words
     ASUS_ST_BAT_FULL,       // mAh, last full charge capacity
     ASUS_ST_BAT_NOW,        // mAh, remaining
     ASUS_ST_BAT_STATE,      // bits 0-7: _BST state (1 discharging, 2 charging), bits 8-31: rate in mA
-    ASUS_ST_COUNT = 24
+    ASUS_ST_KBD,            // keyboard backlight 0..3 as last set (the keyboard cannot be read), 0xFFFFFFFF unknown
+    ASUS_ST_SLASH,          // Slash setting as last set (ASUS_SLASH_PACK), 0xFFFFFFFF unknown
+    ASUS_ST_HID,            // 1: the N-KEY keyboard (0b05:19b6) was found
+    ASUS_ST_COUNT = 27
 };
 
 #define ASUS_FL_AC         0x1u    // on AC power (ACPI0003 _PSR)
 #define ASUS_FL_FAN_CUSTOM 0x2u    // a custom fan curve is active (written since the last profile change)
+
+// Slash: mode index (ASUS_SLASH_MODES order, as G-Helper's SlashMode), brightness 0..3, interval 0..5 (animation speed)
+#define ASUS_SLASH_PACK(mode, bright, interval) ((uint32_t)(mode) | ((uint32_t)(bright) << 8) | ((uint32_t)(interval) << 12))
+#define ASUS_SLASH_MODE(v)     ((v) & 0xff)
+#define ASUS_SLASH_BRIGHT(v)   (((v) >> 8) & 0xf)
+#define ASUS_SLASH_INTERVAL(v) (((v) >> 12) & 0xf)
+#define ASUS_SLASH_MODES "Static", "Bounce", "Slash", "Loading", "Bit Stream", "Transmission", "Flow", "Flux", \
+                         "Phantom", "Spectrum", "Hazard", "Interfacing", "Ramp", "Game Over", "Start", "Buzzer"
+#define ASUS_SLASH_MODE_COUNT 16
 
 #endif
