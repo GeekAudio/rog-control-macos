@@ -14,6 +14,9 @@
 //                                      tells a slow core apart from a thread that is not getting the CPU
 //   sysctl debug.amdcppc.temp           (read) Tctl from SMN 0x59800 through the host bridge's index/data pair (0x60 / 0x64),
 //                                      as Linux k10temp does, and the P-state current limit MSR: is the clock held by heat?
+//   sysctl debug.amdcppc.sensors        (read, cheap, for the RogControl app) "tctl=<m°C> pkg_mw=<mW>": Tctl as above and the
+//                                      package power from the RAPL energy counter (MSR 0xC001029B, unit from 0xC0010299) averaged
+//                                      since the previous read of this sysctl (0 on the first read)
 //   sysctl debug.amdcppc.epp=<0..255>  CPPC request on every CPU: max = highest perf, min = lowest non-linear, desired = 0
 //                                      (autonomous), EPP = value (0 performance .. 128 balanced .. 255 power save). Only when
 //                                      CPPC is enabled.
@@ -43,6 +46,8 @@ int cpu_number(void);
 #define MSR_HW_PSTATE_STAT 0xC0010293
 #define MSR_PSTATE_CUR_LIM 0xC0010061
 #define SMN_THM_TCON_CUR   0x00059800
+#define MSR_RAPL_UNIT      0xC0010299
+#define MSR_PKG_ENERGY     0xC001029B
 #define HWCR_CPB_DIS       (1ull << 25)
 
 static const int kMaxCpu = 64;
@@ -225,6 +230,42 @@ static void buildTemp()
     snprintf(gTemp, sizeof(gTemp), "Tctl %d.%d C (smn %08x); PStateCurLim %s cur %llu max %llu", mc / 1000, (mc % 1000) / 100, v,
              limOk ? "ok" : "?", limOk ? lim & 7 : 0ull, limOk ? (lim >> 4) & 7 : 0ull);
 }
+static bool tctlMilli(int *mc)
+{
+    uint32_t v = 0;
+    if (!smnRead(SMN_THM_TCON_CUR, &v)) return false;
+    *mc = (int)((v >> 21) * 125);
+    if (v & (1u << 19)) *mc -= 49000;
+    return true;
+}
+static uint64_t gLastEnergy, gLastNs;
+static char gSensors[96];
+static void buildSensors()
+{
+    int mc = 0;
+    bool tOk = tctlMilli(&mc);
+    uint64_t unit = 0, e = 0, mw = 0, now = 0;
+    if (rd(MSR_RAPL_UNIT, &unit) && rd(MSR_PKG_ENERGY, &e)) {
+        absolutetime_to_nanoseconds(mach_absolute_time(), &now);
+        e &= 0xffffffffull;
+        if (gLastNs && now > gLastNs) {
+            uint64_t de = (e - gLastEnergy) & 0xffffffffull;     // 32-bit counter, wraps
+            uint32_t esu = (uint32_t)(unit >> 8) & 0x1f;          // energy unit 1 / 2^esu J
+            // mW = de / 2^esu J * 1000 / (dt ns / 1e9)
+            mw = ((de * 1000000ull) >> esu) * 1000ull / ((now - gLastNs) / 1000ull ? (now - gLastNs) / 1000ull : 1);
+        }
+        gLastEnergy = e; gLastNs = now;
+    }
+    snprintf(gSensors, sizeof(gSensors), "tctl=%d pkg_mw=%llu", tOk ? mc : -1, mw);
+}
+static int sensors_sysctl SYSCTL_HANDLER_ARGS
+{
+    if (gLock) IOLockLock(gLock);
+    buildSensors();
+    int e = SYSCTL_OUT(req, gSensors, strlen(gSensors) + 1);
+    if (gLock) IOLockUnlock(gLock);
+    return e;
+}
 static int temp_sysctl SYSCTL_HANDLER_ARGS
 {
     if (gLock) IOLockLock(gLock);
@@ -263,6 +304,7 @@ SYSCTL_NODE(_debug, OID_AUTO, amdcppc, CTLFLAG_RW | CTLFLAG_LOCKED, 0, "AmdCppc"
 SYSCTL_PROC(_debug_amdcppc, OID_AUTO, report, CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_LOCKED, nullptr, 0, report_sysctl, "A", "registers");
 SYSCTL_PROC(_debug_amdcppc, OID_AUTO, freq, CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_LOCKED, nullptr, 0, freq_sysctl, "A", "effective clock");
 SYSCTL_PROC(_debug_amdcppc, OID_AUTO, temp, CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_LOCKED, nullptr, 0, temp_sysctl, "A", "Tctl");
+SYSCTL_PROC(_debug_amdcppc, OID_AUTO, sensors, CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_LOCKED, nullptr, 0, sensors_sysctl, "A", "Tctl + package power");
 SYSCTL_PROC(_debug_amdcppc, OID_AUTO, pstate, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, nullptr, W_PSTATE, write_sysctl, "I", "request P-state");
 SYSCTL_PROC(_debug_amdcppc, OID_AUTO, boost, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, nullptr, W_BOOST, write_sysctl, "I", "1 = boost allowed");
 SYSCTL_PROC(_debug_amdcppc, OID_AUTO, cppc, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, nullptr, W_CPPC_EN, write_sysctl, "I", "1 = enable CPPC");
@@ -287,6 +329,7 @@ bool AmdCppc::start(IOService *provider)
     sysctl_register_oid(&sysctl__debug_amdcppc_report);
     sysctl_register_oid(&sysctl__debug_amdcppc_freq);
     sysctl_register_oid(&sysctl__debug_amdcppc_temp);
+    sysctl_register_oid(&sysctl__debug_amdcppc_sensors);
     sysctl_register_oid(&sysctl__debug_amdcppc_pstate);
     sysctl_register_oid(&sysctl__debug_amdcppc_boost);
     sysctl_register_oid(&sysctl__debug_amdcppc_cppc);
@@ -301,6 +344,7 @@ void AmdCppc::stop(IOService *provider)
     sysctl_unregister_oid(&sysctl__debug_amdcppc_cppc);
     sysctl_unregister_oid(&sysctl__debug_amdcppc_boost);
     sysctl_unregister_oid(&sysctl__debug_amdcppc_pstate);
+    sysctl_unregister_oid(&sysctl__debug_amdcppc_sensors);
     sysctl_unregister_oid(&sysctl__debug_amdcppc_temp);
     sysctl_unregister_oid(&sysctl__debug_amdcppc_freq);
     sysctl_unregister_oid(&sysctl__debug_amdcppc_report);

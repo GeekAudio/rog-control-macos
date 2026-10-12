@@ -19,17 +19,33 @@ highest performance, so the limit sits in the platform. The profile and the PPT 
 
 | asusctl feature | Linux path | macOS route | Status |
 |---|---|---|---|
-| Platform profile (balanced / turbo / silent) | `asus-wmi` throttle_thermal_policy, WMI dev `0x00120075` | `kexts/AsusWmi`: `sysctl debug.asuswmi.profile` | first build failed every call (12-byte buffer); fixed, untested |
-| CPU power limits SPL / SPPT / FPPT | `asus-armoury` ppt_*, dev `0x001200A3` / `0x001200A0` / `0x001200C1`; GA403WM: 15-80 / 25-80 / 35-80 W on AC, 35/35/65 W max on battery | `debug.asuswmi.ppt_spl`, `ppt_sppt`, `ppt_fppt` (AC ranges enforced) | **done, untested** |
-| Battery charge limit | dev `0x00120057` | `debug.asuswmi.charge_limit` (20-100) | **done, untested** |
-| NVIDIA dynamic boost / temp target / TGP | dev `0x001200C0` / `0x001200C2` / `0x00120099` | read in `debug.asuswmi.status`; writes later (NullMoth driver decides the GPU clocks anyway) | read only |
-| GPU MUX, dGPU disable | dev `0x00090016` / `0x00090020` | read in `status`; **do not write** from macOS: the NVIDIA driver is running | read only |
-| Fan curves | dev `0x00110024` / `0x00110025` (buffer result) | needs a buffer-returning WMNB call (`evaluateObject`) | todo |
-| Keyboard LEDs (Aura) | USB HID, N-KEY device `0b05:19b6` (here: "ITE Device(8910)"); `aura_support.ron` lists GA403 boards as one zone, Static/Breathe/Pulse/Rainbow | user space, `IOHIDDeviceSetReport` feature reports, no kext needed; port of `rog-aura` (MPL-2.0 files keep their license) | todo |
-| Panel overdrive, mini-LED | dev `0x00050019`, `0x0005001E` | WMI, same kext | todo |
-| AniMe / Slash lid LEDs | USB HID | user space | not on this board |
-| Profile on AC/battery change | asusd | small LaunchDaemon watching IOPowerSources | todo |
-| GUI (rog-control-center) | Slint app over D-Bus | SwiftUI menu bar app (like ItlWiFi) talking to the sysctls through a privileged helper | todo |
+| Platform profile (Silent / Performance / Turbo) | `asus-wmi` throttle_thermal_policy, WMI dev `0x00120075` (0 balanced = Armoury Crate "Performance", 1 turbo, 2 silent) | AsusWmi user client, RogControl | built, untested |
+| CPU power limits SPL / SPPT / FPPT ("Manual") | `asus-armoury` ppt_*; GA403WM: AC 15-80 / 25-80 / 35-80 W, battery 15-35 / 25-35 / 35-65 W; `requires_fan_curve` | AsusWmi checks the range for the current source (ACPI `ACAD._PSR`) and refuses limits until a custom fan curve is active (EBUSY / `kIOReturnNotPermitted`), as asus-armoury does | built, untested |
+| Fan curves | dev `0x00110024` (CPU) / `0x00110025` (GPU); DSTS with arg1 = profile returns 8 temps + 8 duties; DEVS packs them into 4 dwords | read and write in AsusWmi (temps rising, duties not falling, top point >= 40 %); RogControl "Manual" uses a chosen firmware curve (Silent / Performance / Turbo) as the custom curve; no curve editor yet | built, untested |
+| Fan speeds | dev `0x00110013` / `0x00110014`, value x 100 rpm | RogControl | built, untested |
+| Battery charge limit | dev `0x00120057` | RogControl 60 / 80 / 100 %, re-applied at start | built, untested |
+| Profile per power source | asusd | RogControl keeps one setting set for AC and one for battery and re-applies on IOPowerSources changes and at login | built, untested |
+| NVIDIA dynamic boost / temp target / TGP | dev `0x001200C0` / `0x001200C2` / `0x00120099` | base TGP shown (55 W); no writes: they notify the NVIDIA ACPI device and the NullMoth driver decides the GPU clocks | read only |
+| GPU MUX, dGPU disable | dev `0x00090016` / `0x00090020` | shown; **do not write** from macOS: the NVIDIA driver is running | read only |
+| Keyboard LEDs (Aura) | USB HID, N-KEY device `0b05:19b6`; GA403 boards: one zone, Static/Breathe/Pulse/Rainbow | user space HID feature reports, no kext needed | todo |
+| Panel overdrive | dev `0x00050019` | WMI | todo (absent in this BIOS's DSTS list) |
+| GUI (rog-control-center) | Slint app over D-Bus | `macos/RogControl` menu bar app, user client (no sudo; admin or console user) | built, untested |
+
+## RogControl
+
+`scripts/build-rogcontrol.sh --install` copies it to /Applications and starts it at login. The popover shows CPU Tctl,
+package power (RAPL, `debug.amdcppc.sensors`), both fan speeds, the mode buttons (Turbo is disabled on battery, as in
+Armoury Crate), the Manual limits and fan curve choice, the charge limit, and the GPU MUX state. The first start adopts the
+firmware's current profile and charge limit instead of imposing defaults.
+
+Measuring the profiles of this machine (no sudo, through the user client):
+
+```
+/Applications/RogControl.app/Contents/MacOS/RogControl --bench 20
+```
+
+Runs Silent, Performance and Turbo (AC only) for 20 s each with every CPU busy and prints average and peak package power,
+peak Tctl, fan speeds and the Zen 5 / Zen 5c clocks, then puts the previous profile back.
 
 ## AsusWmi (phase 1)
 
