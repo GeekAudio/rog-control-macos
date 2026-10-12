@@ -26,12 +26,14 @@ struct AsusState {
     var ppt = [0, 0, 0]
     var ranges = [(15, 80), (25, 80), (35, 80)]
     var gpuMux: UInt32 = ~0, dgpu: UInt32 = ~0, baseTgp = 0
+    var backlight: Int? = nil, backlightMax = 0
+    var batDesign = 0, batFull = 0, batNow = 0, batState = 0, batRate = 0   // mAh, mAh, mAh, _BST state, mA
 }
 
 enum Asus {
-    static let abi: UInt32 = 1
+    static let abi: UInt32 = 2
     enum Sel: UInt32 { case state = 0, set = 1, fanRead = 2, fanWrite = 3, fanReset = 4 }
-    enum What: UInt64 { case profile = 1, spl = 2, sppt = 3, fppt = 4, charge = 5 }
+    enum What: UInt64 { case profile = 1, spl = 2, sppt = 3, fppt = 4, charge = 5, backlight = 6 }
 
     static func open() -> io_connect_t? {
         let svc = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AsusWmi"))
@@ -64,7 +66,7 @@ enum Asus {
         let (kr, b) = call(.state, outCount: 24 * 4)
         guard kr == KERN_SUCCESS, b.count >= 24 * 4 else { return s }
         func w(_ i: Int) -> UInt32 { b.withUnsafeBytes { $0.load(fromByteOffset: i * 4, as: UInt32.self) } }
-        guard w(0) == abi else { return s }
+        guard w(0) >= 1, w(0) <= abi else { return s }          // ABI 1 (no backlight / battery words) still works
         s.present = true
         s.ac = w(1) & 1 != 0; s.fanCustom = w(1) & 2 != 0
         s.profile = w(2) == ~0 ? nil : Int(w(2)); s.charge = w(3) == ~0 ? nil : Int(w(3))
@@ -72,6 +74,10 @@ enum Asus {
         s.ppt = [Int(w(6)), Int(w(7)), Int(w(8))]
         s.ranges = [(Int(w(9)), Int(w(10))), (Int(w(11)), Int(w(12))), (Int(w(13)), Int(w(14)))]
         s.gpuMux = w(15); s.dgpu = w(16); s.baseTgp = Int(w(17))
+        guard w(0) >= 2 else { return s }
+        s.backlight = w(18) == ~0 ? nil : Int(w(18)); s.backlightMax = Int(w(19))
+        s.batDesign = Int(w(20)); s.batFull = Int(w(21)); s.batNow = Int(w(22))
+        s.batState = Int(w(23) & 0xff); s.batRate = Int(w(23) >> 8)
         return s
     }
 
@@ -215,7 +221,7 @@ final class RogModel: ObservableObject {
         if st.present, d.string(forKey: st.ac ? "ac.mode" : "battery.mode") == nil, let m = Mode.from(profile: st.profile) {
             var s = SourceSettings.load(ac: st.ac); s.mode = m; s.save(ac: st.ac)
         }
-        if st.present, d.object(forKey: "charge") == nil, let c = st.charge { charge = c; d.set(c, forKey: "charge") }
+        if st.present, d.object(forKey: "charge") == nil, let c = st.charge, (20...100).contains(c) { charge = c; d.set(c, forKey: "charge") }
         settings = SourceSettings.load(ac: st.ac)
         applyAll(reason: "start")
         let ctx = Unmanaged.passUnretained(self).toOpaque()
@@ -257,7 +263,7 @@ final class RogModel: ObservableObject {
         guard st.present else { message = "AsusWmi is not loaded"; return }
         var errs: [String] = []
         if let e = Apply.mode(settings, state: st) { errs.append(e) }
-        if let c = st.charge, c != charge, Asus.set(.charge, charge) != KERN_SUCCESS { errs.append("charge limit refused") }
+        if st.charge != charge, Asus.set(.charge, charge) != KERN_SUCCESS { errs.append("charge limit refused") }
         loadCurve()
         st = Asus.state()
         message = errs.isEmpty ? "\(settings.mode.title) applied (\(reason))" : errs.joined(separator: "; ")
@@ -274,6 +280,17 @@ final class RogModel: ObservableObject {
         charge = v; UserDefaults.standard.set(v, forKey: "charge")
         message = Asus.set(.charge, v) == KERN_SUCCESS ? "charge limit \(v) %" : "charge limit refused"
         st = Asus.state()
+    }
+    func setBacklight(_ v: Int) {
+        if Asus.set(.backlight, v) == KERN_SUCCESS { st.backlight = v } else { message = "brightness refused" }
+    }
+    var batteryLine: String {
+        guard st.batDesign > 5 else { return "battery data not available from the firmware" }
+        var s = ""
+        if st.batFull > 0 { s += String(format: "health %.0f %% (%d / %d mAh)", 100.0 * Double(st.batFull) / Double(st.batDesign), st.batFull, st.batDesign) }
+        if st.batFull > 0, st.batNow > 0 { s += String(format: " · %.0f %%", 100.0 * Double(st.batNow) / Double(st.batFull)) }
+        if st.batState & 2 != 0 { s += " · charging \(st.batRate) mA" } else if st.batState & 1 != 0 { s += " · \(st.batRate) mA" }
+        return s
     }
     func loadCurve() { curve = Asus.fanCurve(fan: 0, profile: (settings.mode == .manual ? settings.fanBase : settings.mode).firmwareProfile) }
     func setLogin(_ on: Bool) { LoginItem.set(on); loginEnabled = LoginItem.enabled }
@@ -381,6 +398,17 @@ struct ContentView: View {
             }
             if let c = m.curve { CurveChart(c: c) }
 
+            if m.st.backlightMax > 0 {
+                HStack(spacing: 6) {
+                    Image(systemName: "sun.min").font(.system(size: 11)).foregroundStyle(.secondary)
+                    Slider(value: Binding(get: { Double(m.st.backlight ?? 0) }, set: { m.setBacklight(Int($0.rounded())) }),
+                           in: 0...Double(m.st.backlightMax))
+                        .controlSize(.small)
+                    Image(systemName: "sun.max").font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+                .help("Panel brightness (EC, through the NVIDIA WMI-EC method; the brightness keys step it too)")
+            }
+
             Text("Battery").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
             HStack(spacing: 6) {
                 ForEach([60, 80, 100], id: \.self) { v in
@@ -391,6 +419,7 @@ struct ContentView: View {
                 Spacer()
                 Text(m.st.charge.map { "limit \($0) %" } ?? "–").font(.system(size: 11)).foregroundStyle(.secondary)
             }
+            Text(m.batteryLine).font(.system(size: 11)).foregroundStyle(.secondary)
 
             Text(gpuLine).font(.system(size: 11)).foregroundStyle(.secondary)
             if !m.message.isEmpty { Text(m.message).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2) }

@@ -89,3 +89,21 @@ macOS does not publish them in the registry. `debug.asuswmi.dumpacpi=1` copies t
 them with `ioreg -a -rc AsusWmi -d 1` and decompile with `iasl` (MaciASL ships one). Needed for the fan-curve buffer format,
 for checking what `WMNB` does with each device id on this BIOS, and for the EC fields if the profile alone does not lift the
 2000 MHz cap.
+
+## Findings 2026-10-11 evening (after the INIT/SFUN fix)
+
+* **Profiles work.** `RogControl --bench 15` on AC: Silent Tctl max 88 °C, fans 2300/2500 rpm; Performance 92 °C, 2800/3000;
+  Turbo 95.8 °C, 4400/4600. Zen 5 cores now boost to ~4.8 GHz (were stuck at 2000 MHz before). DEVS on 0x00120075 is
+  accepted, but **DSTS always returns 3** on this BIOS, and DSTS on the charge limit (0x00120057) returns 0: AsusWmi now
+  reports the values last set since boot (ABI 2), as Linux asus-wmi keeps its own copy.
+* **Package power read 0**: `debug.amdcppc.sensors` now carries the raw RAPL unit / counter (`rapl=...`) to see whether the
+  MSRs fault or the counter does not move.
+* **Battery**: SMCBatteryManager showed design = full = remaining = 5, which are the initial values of BAT1's PBIF/PBST
+  packages: `_BIF` / `_BST` only read the EC while EC0.ECOK is set (EC0._REG with space 3). `sysctl debug.asuswmi.battery`
+  prints ECOK and the raw packages; `sudo sysctl debug.asuswmi.ec_reg=1` runs `EC0._REG(3, 1)` if ECOK is 0.
+* **Panel brightness**: nothing on macOS drives this OLED's backlight (NullMoth has no backlight code, macOS sees the panel
+  as a non-built-in display without brightness). The DSDT has the NVIDIA WMI-EC backlight method (`\_SB.PCI0.AWMI.WMAA`,
+  GUID 603E9613-EF25-4338-A3D0-C46177516DB7, as Linux nvidia-wmi-ec-backlight): method 1 mode 0/1/2 = get / set / max
+  (0xC8) on EC fields GBLD / SBLD. AsusWmi uses it (`debug.asuswmi.backlight`, RogControl slider) and steps it on the
+  brightness keys (BRTN sends Notify 0x86 / 0x87 to VGA.LCD and PEGP.EDP1; AsusWmi listens on EDP1). The BIOS reports
+  brightness source 3 (AUX), so whether the EC level reaches the OLED is the open question.

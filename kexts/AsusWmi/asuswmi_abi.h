@@ -5,7 +5,7 @@
 #ifndef ASUSWMI_ABI_H
 #define ASUSWMI_ABI_H
 
-#define ASUSWMI_ABI_VERSION 1
+#define ASUSWMI_ABI_VERSION 2
 
 enum {
     kAsusUcGetState  = 0,   // out: struct, uint32_t[ASUS_ST_COUNT]
@@ -22,13 +22,14 @@ enum {                      // kAsusUcSet "what"
     ASUS_SET_SPPT    = 3,   // W, PL2 slow
     ASUS_SET_FPPT    = 4,   // W, PL3 fast
     ASUS_SET_CHARGE  = 5,   // %, battery charge end 20..100
+    ASUS_SET_BACKLIGHT = 6, // panel brightness 0..ASUS_ST_BACKLIGHT_MAX (EC, through the NVIDIA WMI-EC method AWMI.WMAA)
 };
 
 enum {                      // kAsusUcGetState words
     ASUS_ST_ABI = 0,
     ASUS_ST_FLAGS,          // ASUS_FL_*
-    ASUS_ST_PROFILE,        // 0..2, 0xFFFFFFFF unknown
-    ASUS_ST_CHARGE,         // %, 0xFFFFFFFF unknown
+    ASUS_ST_PROFILE,        // 0..2 as last set since boot (the BIOS's DSTS does not report it), 0xFFFFFFFF unknown
+    ASUS_ST_CHARGE,         // %, as last set since boot (DSTS reads 0 on this BIOS), 0xFFFFFFFF unknown
     ASUS_ST_CPU_FAN_RPM,
     ASUS_ST_GPU_FAN_RPM,
     ASUS_ST_SPL,            // W last set through AsusWmi since boot / the last profile change; 0 = the profile's own
@@ -40,6 +41,12 @@ enum {                      // kAsusUcGetState words
     ASUS_ST_GPU_MUX,        // raw DSTS
     ASUS_ST_DGPU_DISABLE,   // raw DSTS
     ASUS_ST_NV_BASE_TGP,    // W
+    ASUS_ST_BACKLIGHT,      // current level, 0xFFFFFFFF unknown
+    ASUS_ST_BACKLIGHT_MAX,  // 0 = no EC backlight control
+    ASUS_ST_BAT_DESIGN,     // mAh, design capacity (_BIF); 0 unknown
+    ASUS_ST_BAT_FULL,       // mAh, last full charge capacity
+    ASUS_ST_BAT_NOW,        // mAh, remaining
+    ASUS_ST_BAT_STATE,      // bits 0-7: _BST state (1 discharging, 2 charging), bits 8-31: rate in mA
     ASUS_ST_COUNT = 24
 };
 

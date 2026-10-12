@@ -27,6 +27,11 @@
 //   sysctl debug.asuswmi.ppt_fppt=<W>      PL3 fast        AC 35..80 W, battery 35..65 W   (0x001200C1)
 //   sysctl debug.asuswmi.charge_limit=<%>  battery charge end 20..100 (0x00120057)
 //   sysctl debug.asuswmi.probe=<dev id>    then read debug.asuswmi.probe: raw DSTS of any device id (exploration)
+//   sysctl debug.asuswmi.backlight[=<n>]   panel brightness 0..200 through AWMI.WMAA (the NVIDIA WMI-EC backlight method:
+//                                          GUID 603E9613-EF25-4338-A3D0-C46177516DB7, EC fields GBLD / SBLD); the brightness
+//                                          keys (ACPI Notify 0x86 / 0x87 on PEGP.EDP1) step it by 1/16
+//   sysctl debug.asuswmi.battery           ECOK, _BIF and _BST of BAT1 as the firmware returns them
+//   sysctl debug.asuswmi.ec_reg=1          runs EC0._REG (3, 1) (EmbeddedControl space available) if ECOK is still 0
 //   sysctl debug.asuswmi.dumpacpi=1        publishes the DSDT and SSDTs as registry properties acpi-DSDT, acpi-SSDT-<n>
 // sysctl writes need root.
 #include <IOKit/IOService.h>
@@ -34,6 +39,7 @@
 #include <IOKit/IOUserClient.h>
 #include <IOKit/acpi/IOACPIPlatformDevice.h>
 #include <IOKit/acpi/IOACPIPlatformExpert.h>
+#include <kern/thread_call.h>
 #include <sys/sysctl.h>
 #include <stdarg.h>
 #include <string.h>
@@ -107,6 +113,21 @@ public:
     IOReturn fanCustomFromFirmware();
     void getState(uint32_t st[ASUS_ST_COUNT]);
     void dumpAcpi();
+    // profile and charge limit as last set: DSTS on this BIOS returns 3 for the profile and 0 for the charge limit
+    int curProfile = -1, curCharge = -1;
+    // panel backlight through the NVIDIA WMI-EC method (AWMI.WMAA)
+    IOACPIPlatformDevice *awmi = nullptr, *bat = nullptr, *ec = nullptr, *panel = nullptr;
+    IONotifier *panelNotifier = nullptr;
+    thread_call_t keyCall = nullptr;
+    volatile SInt32 keySteps = 0;
+    uint32_t blMaxLevel = 0;
+    bool wmaa(uint32_t method, uint32_t mode, uint32_t val, uint32_t *ret);
+    bool blGet(uint32_t *lvl) { return blMaxLevel && wmaa(1, 0, 0, lvl); }
+    IOReturn blSet(int lvl);
+    void blKeys();
+    bool battery(uint32_t out[4], char *txt, size_t txtLen);
+    IOReturn ecReg();
+    void findAcpi();
 };
 OSDefineMetaClassAndStructors(AsusWmi, IOService)
 
@@ -185,6 +206,164 @@ bool AsusWmi::onAC()
     return acad && acad->evaluateInteger("_PSR", &r) == kIOReturnSuccess && r != 0;
 }
 
+static IOACPIPlatformDevice *acpiNamed(const char *name)
+{
+    OSDictionary *m = IOService::nameMatching(name);
+    if (!m) return nullptr;
+    IOService *s = IOService::copyMatchingService(m);
+    m->release();
+    IOACPIPlatformDevice *d = s ? OSDynamicCast(IOACPIPlatformDevice, s) : nullptr;
+    if (s && !d) s->release();
+    return d;
+}
+
+// The ACPI child `name` of the ACPI node behind PCI device `pciName` (its "acpi-path"), retained.
+static IOACPIPlatformDevice *acpiChildOfPci(const char *pciName, const char *name)
+{
+    OSDictionary *m = IOService::nameMatching(pciName);
+    IOService *pci = m ? IOService::copyMatchingService(m) : nullptr;
+    if (m) m->release();
+    if (!pci) return nullptr;
+    IOACPIPlatformDevice *r = nullptr;
+    OSString *path = OSDynamicCast(OSString, pci->getProperty("acpi-path"));
+    IORegistryEntry *node = path ? IORegistryEntry::fromPath(path->getCStringNoCopy()) : nullptr;
+    if (node) {
+        OSIterator *it = node->getChildIterator(IORegistryEntry::getPlane("IOACPIPlane"));
+        if (it) {
+            while (OSObject *o = it->getNextObject()) {
+                IOACPIPlatformDevice *d = OSDynamicCast(IOACPIPlatformDevice, o);
+                if (d && !strcmp(d->getName(), name)) { d->retain(); r = d; break; }
+            }
+            it->release();
+        }
+        node->release();
+    }
+    pci->release();
+    return r;
+}
+
+void AsusWmi::findAcpi()
+{
+    awmi = acpiNamed("AWMI");
+    if (awmi && awmi->validateObject("WMAA") != kIOReturnSuccess) { awmi->release(); awmi = nullptr; }
+    bat = acpiNamed("BAT1");
+    ec = acpiNamed("EC0");
+    uint32_t m = 0;
+    if (awmi && wmaa(1, 2, 0, &m) && m > 0 && m <= 0xffff) blMaxLevel = m;   // mode 2: the maximum level (0xC8 here)
+    say("acpi: AWMI %s (backlight max %u), BAT1 %s, EC0 %s", awmi ? "yes" : "no", blMaxLevel, bat ? "yes" : "no", ec ? "yes" : "no");
+}
+
+// AWMI.WMAA (instance 0, method, buffer { mode, value, ... }): method 1 = level (mode 0 get, 1 set, 2 max), method 2 =
+// brightness source (Linux nvidia-wmi-ec-backlight; this BIOS says 3, "AUX", but its level method goes to the EC anyway).
+bool AsusWmi::wmaa(uint32_t method, uint32_t mode, uint32_t val, uint32_t *ret)
+{
+    if (!awmi) return false;
+    uint32_t b[6] = { mode, val, 0, 0, 0, 0 };
+    OSNumber *inst = OSNumber::withNumber(0ull, 32), *mid = OSNumber::withNumber((unsigned long long)method, 32);
+    OSData *buf = OSData::withBytes(b, sizeof(b));
+    OSObject *o = nullptr;
+    bool ok = false;
+    if (inst && mid && buf) {
+        OSObject *params[3] = { inst, mid, buf };
+        ok = awmi->evaluateObject("WMAA", &o, params, 3) == kIOReturnSuccess;
+    }
+    OSNumber *n = o ? OSDynamicCast(OSNumber, o) : nullptr;
+    if (ret) *ret = n ? n->unsigned32BitValue() : 0;
+    ok = ok && n;
+    if (o) o->release();
+    if (inst) inst->release();
+    if (mid) mid->release();
+    if (buf) buf->release();
+    return ok;
+}
+
+IOReturn AsusWmi::blSet(int lvl)
+{
+    if (!blMaxLevel) return kIOReturnUnsupported;
+    if (lvl < 0) lvl = 0;
+    if (lvl > (int)blMaxLevel) lvl = (int)blMaxLevel;
+    uint32_t r = 0;
+    return wmaa(1, 1, (uint32_t)lvl, &r) ? kIOReturnSuccess : kIOReturnIOError;
+}
+
+// Brightness keys: the BIOS's BRTN sends Notify 0x86 (up) / 0x87 (down) to VGA.LCD and PEGP.EDP1; nothing on macOS drives
+// this panel's backlight, so step the EC level here. Collected in keySteps by the notifier, applied on a thread call.
+void AsusWmi::blKeys()
+{
+    SInt32 steps;
+    do { steps = keySteps; } while (!OSCompareAndSwap((UInt32)steps, 0, (volatile UInt32 *)&keySteps));
+    if (!steps || !lock) return;
+    IOLockLock(lock);
+    uint32_t cur = 0;
+    if (blGet(&cur)) {
+        int step = (int)(blMaxLevel + 15) / 16;
+        int v = (int)cur + steps * step;
+        if (steps < 0 && v < 1) v = (int)cur > 1 ? 1 : 0;         // the first press down to the bottom keeps the panel lit
+        blSet(v);
+    }
+    IOLockUnlock(lock);
+}
+
+static void keyThread(thread_call_param_t p0, thread_call_param_t) { ((AsusWmi *)p0)->blKeys(); }
+
+static IOReturn panelNotify(void *target, void *, UInt32 type, IOService *, void *arg, vm_size_t)
+{
+    AsusWmi *self = (AsusWmi *)target;
+    if (type != kIOACPIMessageDeviceNotification || !arg || !self->keyCall) return kIOReturnSuccess;
+    UInt32 code = *(UInt32 *)arg;
+    if (code == 0x86) OSIncrementAtomic(&self->keySteps);
+    else if (code == 0x87) OSDecrementAtomic(&self->keySteps);
+    else return kIOReturnSuccess;
+    thread_call_enter(self->keyCall);
+    return kIOReturnSuccess;
+}
+
+// BAT1 as the firmware reports it. _BIF/_BST only read the EC while ECOK is set (EC0._REG with space 3); otherwise they
+// return their initial packages (capacity 5, which is what SMCBatteryManager showed).
+bool AsusWmi::battery(uint32_t out[4], char *txt, size_t txtLen)
+{
+    memset(out, 0, 4 * sizeof(uint32_t));
+    UInt32 ecok = 0xff, okec = 0xff;
+    if (ec) { ec->evaluateInteger("ECOK", &ecok); ec->evaluateInteger("OKEC", &okec); }
+    size_t n = txt ? (size_t)snprintf(txt, txtLen, "ECOK=%u OKEC=%u", ecok, okec) : 0;
+    if (!bat) return false;
+    bool ok = false;
+    const char *const meth[2] = { "_BIF", "_BST" };
+    for (int k = 0; k < 2; k++) {
+        OSObject *o = nullptr;
+        if (bat->evaluateObject(meth[k], &o) != kIOReturnSuccess) continue;
+        OSArray *a = o ? OSDynamicCast(OSArray, o) : nullptr;
+        uint32_t v[9] = {0};
+        if (a) for (unsigned i = 0; i < a->getCount() && i < 9; i++) {
+            OSNumber *num = OSDynamicCast(OSNumber, a->getObject(i));
+            v[i] = num ? num->unsigned32BitValue() : 0;
+        }
+        if (a && k == 0) { out[0] = v[1]; out[1] = v[2]; ok = true;
+            if (txt) n += (size_t)snprintf(txt + n, txtLen - n, " _BIF unit=%u design=%u full=%u tech=%u volt=%u", v[0], v[1], v[2], v[3], v[4]); }
+        if (a && k == 1) { out[2] = v[2]; out[3] = (v[0] & 0xff) | ((v[1] & 0xffffff) << 8);
+            if (txt) n += (size_t)snprintf(txt + n, txtLen - n, " _BST state=%u rate=%u remain=%u volt=%u", v[0], v[1], v[2], v[3]); }
+        if (o) o->release();
+        if (txt && n >= txtLen) n = txtLen - 1;
+    }
+    return ok;
+}
+
+IOReturn AsusWmi::ecReg()
+{
+    if (!ec) return kIOReturnNotFound;
+    UInt32 ecok = 0;
+    if (ec->evaluateInteger("ECOK", &ecok) == kIOReturnSuccess && ecok) return kIOReturnSuccess;
+    OSNumber *sp = OSNumber::withNumber(3ull, 32), *on = OSNumber::withNumber(1ull, 32);
+    IOReturn r = kIOReturnNoMemory;
+    if (sp && on) { OSObject *params[2] = { sp, on }; r = ec->evaluateObject("_REG", nullptr, params, 2); }
+    if (sp) sp->release();
+    if (on) on->release();
+    ecok = 0;
+    ec->evaluateInteger("ECOK", &ecok);
+    say("EC0._REG(3,1) -> %08x, ECOK %u", r, ecok);
+    return r;
+}
+
 IOReturn AsusWmi::setValue(int what, int v)
 {
     uint32_t ret = 0;
@@ -193,7 +372,7 @@ IOReturn AsusWmi::setValue(int what, int v)
     case ASUS_SET_PROFILE:
         if (v < 0 || v > 2) return kIOReturnBadArgument;
         ok = devs(DEV_PROFILE, (uint32_t)v, &ret);
-        if (ok) { fanCustom = false; pptSet[0] = pptSet[1] = pptSet[2] = 0; }   // a profile change resets fans and limits
+        if (ok) { fanCustom = false; pptSet[0] = pptSet[1] = pptSet[2] = 0; curProfile = v; }   // resets fans and limits
         break;
     case ASUS_SET_SPL: case ASUS_SET_SPPT: case ASUS_SET_FPPT: {
         int i = what - ASUS_SET_SPL;
@@ -207,7 +386,10 @@ IOReturn AsusWmi::setValue(int what, int v)
     case ASUS_SET_CHARGE:
         if (v < 20 || v > 100) return kIOReturnBadArgument;
         ok = devs(DEV_RSOC, (uint32_t)v, &ret);
+        if (ok) curCharge = v;
         break;
+    case ASUS_SET_BACKLIGHT:
+        return blSet(v);
     default:
         return kIOReturnUnsupported;
     }
@@ -256,10 +438,7 @@ IOReturn AsusWmi::fanWrite(int fan, const uint8_t c[16])
 // What the fans already do, but as a custom curve: switches the EC to manual fans without changing any duty.
 IOReturn AsusWmi::fanCustomFromFirmware()
 {
-    uint32_t p = 0;
-    if (!dsts(DEV_PROFILE, &p) || !(p & DSTS_PRESENT)) p = 0;
-    p &= 0xffff;
-    if (p > 2) p = 0;
+    uint32_t p = curProfile >= 0 ? (uint32_t)curProfile : 0;
     for (int fan = 0; fan < 2; fan++) {
         uint8_t c[16];
         IOReturn r = fanRead(fan, (int)p, c);
@@ -272,10 +451,7 @@ IOReturn AsusWmi::fanCustomFromFirmware()
 // Setting the profile again is how asus-wmi turns a custom curve off: the firmware reloads the profile's curves and limits.
 IOReturn AsusWmi::fanReset()
 {
-    uint32_t p = 0;
-    if (!dsts(DEV_PROFILE, &p) || !(p & DSTS_PRESENT)) return kIOReturnIOError;
-    p &= 0xffff;
-    return setValue(ASUS_SET_PROFILE, p > 2 ? 0 : (int)p);
+    return setValue(ASUS_SET_PROFILE, curProfile >= 0 ? curProfile : 0);
 }
 
 void AsusWmi::getState(uint32_t st[ASUS_ST_COUNT])
@@ -285,8 +461,8 @@ void AsusWmi::getState(uint32_t st[ASUS_ST_COUNT])
     bool ac = onAC();
     st[ASUS_ST_ABI] = ASUSWMI_ABI_VERSION;
     st[ASUS_ST_FLAGS] = (ac ? ASUS_FL_AC : 0) | (fanCustom ? ASUS_FL_FAN_CUSTOM : 0);
-    st[ASUS_ST_PROFILE] = dsts(DEV_PROFILE, &v) && (v & DSTS_PRESENT) ? (v & 0xffff) : ~0u;
-    st[ASUS_ST_CHARGE] = dsts(DEV_RSOC, &v) && (v & DSTS_PRESENT) ? (v & 0xffff) : ~0u;
+    st[ASUS_ST_PROFILE] = curProfile >= 0 ? (uint32_t)curProfile : ~0u;
+    st[ASUS_ST_CHARGE] = curCharge >= 0 ? (uint32_t)curCharge : ~0u;
     st[ASUS_ST_CPU_FAN_RPM] = dsts(DEV_CPU_FAN, &v) && (v & DSTS_PRESENT) ? (v & 0xffff) * 100 : 0;
     st[ASUS_ST_GPU_FAN_RPM] = dsts(DEV_GPU_FAN, &v) && (v & DSTS_PRESENT) ? (v & 0xffff) * 100 : 0;
     for (int i = 0; i < 3; i++) {
@@ -298,6 +474,9 @@ void AsusWmi::getState(uint32_t st[ASUS_ST_COUNT])
     st[ASUS_ST_GPU_MUX] = dsts(DEV_GPU_MUX, &v) ? v : ~0u;
     st[ASUS_ST_DGPU_DISABLE] = dsts(DEV_DGPU, &v) ? v : ~0u;
     st[ASUS_ST_NV_BASE_TGP] = dsts(DEV_NV_TGP, &v) && (v & DSTS_PRESENT) ? (v & 0xffff) : 0;
+    st[ASUS_ST_BACKLIGHT] = blGet(&v) ? v : ~0u;
+    st[ASUS_ST_BACKLIGHT_MAX] = blMaxLevel;
+    battery(&st[ASUS_ST_BAT_DESIGN], nullptr, 0);
 }
 
 // getACPITableData() is protected; this type is never instantiated, it only makes the (virtual) call reachable.
@@ -431,7 +610,10 @@ static void buildStatus()
 {
     size_t n = 0;
     gStatus[0] = 0;
-    n += (size_t)snprintf(gStatus, sizeof(gStatus), "%s fan_custom=%d", gSelf->onAC() ? "ac" : "battery", gSelf->fanCustom);
+    n += (size_t)snprintf(gStatus, sizeof(gStatus), "%s fan_custom=%d set_profile=%d set_charge=%d", gSelf->onAC() ? "ac" : "battery",
+                          gSelf->fanCustom, gSelf->curProfile, gSelf->curCharge);
+    uint32_t bl = 0;
+    if (gSelf->blGet(&bl)) n += (size_t)snprintf(gStatus + n, sizeof(gStatus) - n, " backlight=%u/%u", bl, gSelf->blMaxLevel);
     for (int i = 0; i < 3; i++) {
         static const char *const nm[3] = { "spl", "sppt", "fppt" };
         n += (size_t)snprintf(gStatus + n, sizeof(gStatus) - n, " ppt_%s=%u", nm[i], gSelf->pptSet[i]);
@@ -455,7 +637,7 @@ static int status_sysctl SYSCTL_HANDLER_ARGS
     return e;
 }
 
-enum { W_DUMP = 100, W_FAN_CUSTOM = 101 };
+enum { W_DUMP = 100, W_FAN_CUSTOM = 101, W_EC_REG = 102 };
 
 static int write_sysctl SYSCTL_HANDLER_ARGS
 {
@@ -463,8 +645,10 @@ static int write_sysctl SYSCTL_HANDLER_ARGS
     int what = (int)arg2, v = -1;
     uint32_t cur = 0;
     IOLockLock(gSelf->lock);
-    if (what == ASUS_SET_PROFILE) v = gSelf->dsts(DEV_PROFILE, &cur) && (cur & DSTS_PRESENT) ? (int)(cur & 0xffff) : -1;
-    else if (what == ASUS_SET_CHARGE) v = gSelf->dsts(DEV_RSOC, &cur) && (cur & DSTS_PRESENT) ? (int)(cur & 0xffff) : -1;
+    if (what == ASUS_SET_PROFILE) v = gSelf->curProfile;
+    else if (what == ASUS_SET_CHARGE) v = gSelf->curCharge;
+    else if (what == ASUS_SET_BACKLIGHT) v = gSelf->blGet(&cur) ? (int)cur : -1;
+    else if (what == W_EC_REG) { UInt32 e = 0; v = gSelf->ec && gSelf->ec->evaluateInteger("ECOK", &e) == kIOReturnSuccess ? (int)e : -1; }
     else if (what >= ASUS_SET_SPL && what <= ASUS_SET_FPPT) v = (int)gSelf->pptSet[what - ASUS_SET_SPL];
     else if (what == W_FAN_CUSTOM) v = gSelf->fanCustom;
     IOLockUnlock(gSelf->lock);
@@ -474,6 +658,7 @@ static int write_sysctl SYSCTL_HANDLER_ARGS
     IOReturn r;
     if (what == W_DUMP) { gSelf->dumpAcpi(); r = kIOReturnSuccess; }
     else if (what == W_FAN_CUSTOM) r = v ? gSelf->fanCustomFromFirmware() : gSelf->fanReset();
+    else if (what == W_EC_REG) r = v ? gSelf->ecReg() : kIOReturnSuccess;
     else r = gSelf->setValue(what, v);
     IOLockUnlock(gSelf->lock);
     switch (r) {
@@ -502,6 +687,17 @@ static int probe_sysctl SYSCTL_HANDLER_ARGS
     return SYSCTL_OUT(req, s, strlen(s) + 1);
 }
 
+static int battery_sysctl SYSCTL_HANDLER_ARGS
+{
+    if (!gSelf) return ENODEV;
+    char s[256];
+    uint32_t b[4];
+    IOLockLock(gSelf->lock);
+    gSelf->battery(b, s, sizeof(s));
+    IOLockUnlock(gSelf->lock);
+    return SYSCTL_OUT(req, s, strlen(s) + 1);
+}
+
 SYSCTL_NODE(_debug, OID_AUTO, asuswmi, CTLFLAG_RW | CTLFLAG_LOCKED, 0, "AsusWmi");
 SYSCTL_PROC(_debug_asuswmi, OID_AUTO, status, CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_LOCKED, nullptr, 0, status_sysctl, "A", "");
 SYSCTL_PROC(_debug_asuswmi, OID_AUTO, profile, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, nullptr, ASUS_SET_PROFILE, write_sysctl, "I", "");
@@ -512,11 +708,15 @@ SYSCTL_PROC(_debug_asuswmi, OID_AUTO, ppt_fppt, CTLTYPE_INT | CTLFLAG_RW | CTLFL
 SYSCTL_PROC(_debug_asuswmi, OID_AUTO, charge_limit, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, nullptr, ASUS_SET_CHARGE, write_sysctl, "I", "");
 SYSCTL_PROC(_debug_asuswmi, OID_AUTO, dumpacpi, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, nullptr, W_DUMP, write_sysctl, "I", "");
 SYSCTL_PROC(_debug_asuswmi, OID_AUTO, probe, CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_LOCKED, nullptr, 0, probe_sysctl, "A", "");
+SYSCTL_PROC(_debug_asuswmi, OID_AUTO, backlight, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, nullptr, ASUS_SET_BACKLIGHT, write_sysctl, "I", "");
+SYSCTL_PROC(_debug_asuswmi, OID_AUTO, battery, CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_LOCKED, nullptr, 0, battery_sysctl, "A", "");
+SYSCTL_PROC(_debug_asuswmi, OID_AUTO, ec_reg, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, nullptr, W_EC_REG, write_sysctl, "I", "");
 
 static struct sysctl_oid *const kOids[] = {
     &sysctl__debug_asuswmi, &sysctl__debug_asuswmi_status, &sysctl__debug_asuswmi_profile, &sysctl__debug_asuswmi_fan_custom,
     &sysctl__debug_asuswmi_ppt_spl, &sysctl__debug_asuswmi_ppt_sppt, &sysctl__debug_asuswmi_ppt_fppt,
     &sysctl__debug_asuswmi_charge_limit, &sysctl__debug_asuswmi_dumpacpi, &sysctl__debug_asuswmi_probe,
+    &sysctl__debug_asuswmi_backlight, &sysctl__debug_asuswmi_battery, &sysctl__debug_asuswmi_ec_reg,
 };
 
 bool AsusWmi::start(IOService *provider)
@@ -531,6 +731,18 @@ bool AsusWmi::start(IOService *provider)
     uint32_t r = 0;
     if (wmi(M_INIT, 0, 0, &r)) say("INIT %08x", r); else say("INIT failed");
     if (wmi(M_SFUN, 0, 0, &r)) say("SFUN %08x", r); else say("SFUN failed");
+    findAcpi();
+    if (blMaxLevel) {
+        keyCall = thread_call_allocate(keyThread, this);
+        panel = acpiChildOfPci("PEGP", "EDP1");                  // BRTN notifies both panels: listen on one
+        if (!panel) panel = acpiChildOfPci("VGA", "LCD");
+        if (panel && keyCall) panelNotifier = panel->registerInterest(gIOGeneralInterest, panelNotify, this);
+        say("brightness keys: %s%s", panel ? panel->getName() : "no panel", panelNotifier ? "" : " (not hooked)");
+    }
+    char bt[256];
+    uint32_t b4[4];
+    battery(b4, bt, sizeof(bt));
+    say("%s", bt);
     buildStatus();
     say("%s", gStatus);
     for (sysctl_oid *o : kOids) sysctl_register_oid(o);
@@ -541,8 +753,14 @@ bool AsusWmi::start(IOService *provider)
 void AsusWmi::stop(IOService *provider)
 {
     for (int i = (int)(sizeof(kOids) / sizeof(kOids[0])) - 1; i >= 0; i--) sysctl_unregister_oid(kOids[i]);
+    if (panelNotifier) { panelNotifier->remove(); panelNotifier = nullptr; }
+    if (keyCall) { thread_call_cancel_wait(keyCall); thread_call_free(keyCall); keyCall = nullptr; }
     gSelf = nullptr;
     if (acad) { acad->release(); acad = nullptr; }
+    if (panel) { panel->release(); panel = nullptr; }
+    if (awmi) { awmi->release(); awmi = nullptr; }
+    if (bat) { bat->release(); bat = nullptr; }
+    if (ec) { ec->release(); ec = nullptr; }
     if (lock) { IOLockFree(lock); lock = nullptr; }
     IOService::stop(provider);
 }
