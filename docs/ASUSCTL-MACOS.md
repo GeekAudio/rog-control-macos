@@ -95,6 +95,21 @@ for checking what `WMNB` does with each device id on this BIOS, and for the EC f
 
 ## Findings 2026-10-11 evening (after the INIT/SFUN fix)
 
+* **Bench 2026-10-12 (macOS 15.8.1, all 24 threads busy, 20 s per mode, charge limit 60 %).** Package power from RAPL, Tctl peak, fans
+  and the mean clock of the Zen 5 / Zen 5c cores:
+
+  | Power | Mode | avg W | max W | Tctl max | CPU / GPU fan rpm | Zen 5 MHz | Zen 5c MHz |
+  |---|---|---|---|---|---|---|---|
+  | AC | Silent | 49.4-53.3 | 59.3-59.5 | 88.5-88.9 °C | 2600-2700 / 2800-3000 | 4505-4574 | 2685-2834 |
+  | AC | Performance | 49.4-50.4 | 53.9-56.8 | 92.4-92.5 °C | 3500-4000 / 3700-4300 | 4620-4681 | 2635-2836 |
+  | AC | Turbo | 55.8-56.5 | 57.1-57.6 | 95.4-95.5 °C | 5500-5900 / 5600-6000 | 4795-4800 | 2941-2990 |
+  | battery (40 %) | Silent | 29.2 | 29.5 | 73.6 °C | 2300 / 2500 | 4105 | 2891 |
+  | battery (40 %) | Performance | 28.5 | 30.2 | 74.5 °C | 2800 / 3000 | 4106 | 2890 |
+  | battery | Turbo | not available (locked on battery, like Armoury Crate) | | | | | |
+
+  AC ranges are two runs the same evening (the second after a reboot). On battery the whole package drew ~29 W under full load and
+  the estimated time left read 0:33 at 40 %; that is a full-load figure, not idle. Idle / light-use battery life was **not** measured.
+
 * **Profiles work.** `RogControl --bench 15` on AC: Silent Tctl max 88 °C, fans 2300/2500 rpm; Performance 92 °C, 2800/3000;
   Turbo 95.8 °C, 4400/4600. Zen 5 cores now boost to ~4.8 GHz (were stuck at 2000 MHz before). DEVS on 0x00120075 is
   accepted, but **DSTS always returns 3** on this BIOS, and DSTS on the charge limit (0x00120057) returns 0: AsusWmi now
