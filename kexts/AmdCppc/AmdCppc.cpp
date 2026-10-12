@@ -238,7 +238,7 @@ static bool tctlMilli(int *mc)
     if (v & (1u << 19)) *mc -= 49000;
     return true;
 }
-static uint64_t gLastEnergy, gLastNs;
+static uint64_t gLastEnergy, gLastNs, gLastMw;
 static char gSensors[128];
 static void buildSensors()
 {
@@ -249,14 +249,17 @@ static void buildSensors()
     if (eOk) {
         absolutetime_to_nanoseconds(mach_absolute_time(), &now);
         e &= 0xffffffffull;
+        // sysctl(8) calls the handler twice in a row (size, then data): keep the last value for reads closer than 200 ms
+        if (gLastNs && now - gLastNs < 200000000ull) { mw = gLastMw; goto out; }
         if (gLastNs && now > gLastNs) {
             uint64_t de = (e - gLastEnergy) & 0xffffffffull;     // 32-bit counter, wraps
             uint32_t esu = (uint32_t)(unit >> 8) & 0x1f;          // energy unit 1 / 2^esu J
             // mW = de / 2^esu J * 1000 / (dt ns / 1e9)
             mw = ((de * 1000000ull) >> esu) * 1000ull / ((now - gLastNs) / 1000ull ? (now - gLastNs) / 1000ull : 1);
         }
-        gLastEnergy = e; gLastNs = now;
+        gLastEnergy = e; gLastNs = now; gLastMw = mw;
     }
+out:
     // the raw unit / counter follow, so a counter that never moves (or an MSR that faults) shows up in the string
     snprintf(gSensors, sizeof(gSensors), "tctl=%d pkg_mw=%llu rapl=%s%llx/%llx", tOk ? mc : -1, mw,
              !uOk ? "unit-fault " : !eOk ? "energy-fault " : "", unit, e);

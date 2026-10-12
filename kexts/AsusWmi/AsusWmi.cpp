@@ -206,39 +206,23 @@ bool AsusWmi::onAC()
     return acad && acad->evaluateInteger("_PSR", &r) == kIOReturnSuccess && r != 0;
 }
 
+// An ACPI namespace node by its 4-character name, searched in the IOACPIPlane (retained). nameMatching() does not work for
+// these: their IOName / "name" is the _HID (AWMI and ATKD are both "PNP0C14", EC0 is "PNP0C09").
 static IOACPIPlatformDevice *acpiNamed(const char *name)
 {
-    OSDictionary *m = IOService::nameMatching(name);
-    if (!m) return nullptr;
-    IOService *s = IOService::copyMatchingService(m);
-    m->release();
-    IOACPIPlatformDevice *d = s ? OSDynamicCast(IOACPIPlatformDevice, s) : nullptr;
-    if (s && !d) s->release();
-    return d;
-}
-
-// The ACPI child `name` of the ACPI node behind PCI device `pciName` (its "acpi-path"), retained.
-static IOACPIPlatformDevice *acpiChildOfPci(const char *pciName, const char *name)
-{
-    OSDictionary *m = IOService::nameMatching(pciName);
-    IOService *pci = m ? IOService::copyMatchingService(m) : nullptr;
-    if (m) m->release();
-    if (!pci) return nullptr;
+    const IORegistryPlane *plane = IORegistryEntry::getPlane("IOACPIPlane");
+    IORegistryEntry *root = plane ? IORegistryEntry::fromPath("/", plane) : nullptr;
+    if (!root) return nullptr;
     IOACPIPlatformDevice *r = nullptr;
-    OSString *path = OSDynamicCast(OSString, pci->getProperty("acpi-path"));
-    IORegistryEntry *node = path ? IORegistryEntry::fromPath(path->getCStringNoCopy()) : nullptr;
-    if (node) {
-        OSIterator *it = node->getChildIterator(IORegistryEntry::getPlane("IOACPIPlane"));
-        if (it) {
-            while (OSObject *o = it->getNextObject()) {
-                IOACPIPlatformDevice *d = OSDynamicCast(IOACPIPlatformDevice, o);
-                if (d && !strcmp(d->getName(), name)) { d->retain(); r = d; break; }
-            }
-            it->release();
+    IORegistryIterator *it = IORegistryIterator::iterateOver(root, plane, kIORegistryIterateRecursively);
+    if (it) {
+        while (IORegistryEntry *e = it->getNextObject()) {
+            IOACPIPlatformDevice *d = OSDynamicCast(IOACPIPlatformDevice, e);
+            if (d && !strcmp(d->getName(plane), name)) { d->retain(); r = d; break; }
         }
-        node->release();
+        it->release();
     }
-    pci->release();
+    root->release();
     return r;
 }
 
@@ -734,8 +718,8 @@ bool AsusWmi::start(IOService *provider)
     findAcpi();
     if (blMaxLevel) {
         keyCall = thread_call_allocate(keyThread, this);
-        panel = acpiChildOfPci("PEGP", "EDP1");                  // BRTN notifies both panels: listen on one
-        if (!panel) panel = acpiChildOfPci("VGA", "LCD");
+        panel = acpiNamed("EDP1");                               // BRTN notifies VGA.LCD and PEGP.EDP1: listen on one
+        if (!panel) panel = acpiNamed("LCD");
         if (panel && keyCall) panelNotifier = panel->registerInterest(gIOGeneralInterest, panelNotify, this);
         say("brightness keys: %s%s", panel ? panel->getName() : "no panel", panelNotifier ? "" : " (not hooked)");
     }
