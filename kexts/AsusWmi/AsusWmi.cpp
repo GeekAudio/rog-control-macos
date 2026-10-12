@@ -99,18 +99,21 @@ void AsusWmi::say(const char *fmt, ...)
     setProperty("asus-log", log);
 }
 
-// ATKD.WMNB(instance 0, method id, buffer { arg0, arg1, arg2 }) -> integer, as wmi_evaluate_method() with the asus-wmi args
+// ATKD.WMNB(instance 0, method id, buffer { arg0 .. arg4 }) -> integer, as wmi_evaluate_method() with the asus-wmi args.
+// The buffer must be 20 bytes: this BIOS's WMNB starts with CreateDWordField (Arg2, 0x10, IIA4), and a shorter buffer
+// aborts the method (AE_AML_BUFFER_LIMIT) before it looks at the method id; Linux's struct bios_args is 5 dwords too.
 bool AsusWmi::wmi(uint32_t method, uint32_t a0, uint32_t a1, uint32_t *ret)
 {
-    uint32_t args[3] = { a0, a1, 0 };
+    uint32_t args[5] = { a0, a1, 0, 0, 0 };
     OSNumber *inst = OSNumber::withNumber(0ull, 32), *mid = OSNumber::withNumber((unsigned long long)method, 32);
     OSData *buf = OSData::withBytes(args, sizeof(args));
     bool ok = false;
     if (inst && mid && buf) {
         OSObject *params[3] = { inst, mid, buf };
         UInt32 r = 0;
-        ok = atk->evaluateInteger("WMNB", &r, params, 3) == kIOReturnSuccess;
-        *ret = r;
+        IOReturn e = atk->evaluateInteger("WMNB", &r, params, 3);
+        ok = e == kIOReturnSuccess;
+        *ret = ok ? r : (uint32_t)e;
     }
     if (inst) inst->release();
     if (mid) mid->release();
@@ -243,9 +246,9 @@ bool AsusWmi::start(IOService *provider)
     if (!lock) return false;
     gSelf = this;
     uint32_t r = 0;
-    if (wmi(M_INIT, 0, 0, &r)) say("INIT %08x", r);
-    if (wmi(M_SPEC, 0, 9, &r)) say("BIOS WMI spec %u.%u", r >> 16, r & 0xff);
-    if (wmi(M_SFUN, 0, 0, &r)) say("SFUN %08x", r);
+    if (wmi(M_INIT, 0, 0, &r)) say("INIT %08x", r); else say("INIT failed %08x", r);
+    if (wmi(M_SPEC, 0, 9, &r)) say("BIOS WMI spec %u.%u", r >> 16, r & 0xff); else say("SPEC failed %08x", r);
+    if (wmi(M_SFUN, 0, 0, &r)) say("SFUN %08x", r); else say("SFUN failed %08x", r);
     buildStatus();
     say("%s", gStatus);
     for (sysctl_oid *o : kOids) sysctl_register_oid(o);

@@ -19,7 +19,7 @@ highest performance, so the limit sits in the platform. The profile and the PPT 
 
 | asusctl feature | Linux path | macOS route | Status |
 |---|---|---|---|
-| Platform profile (balanced / turbo / silent) | `asus-wmi` throttle_thermal_policy, WMI dev `0x00120075` | `kexts/AsusWmi`: `sysctl debug.asuswmi.profile` | **done, untested** |
+| Platform profile (balanced / turbo / silent) | `asus-wmi` throttle_thermal_policy, WMI dev `0x00120075` | `kexts/AsusWmi`: `sysctl debug.asuswmi.profile` | first build failed every call (12-byte buffer); fixed, untested |
 | CPU power limits SPL / SPPT / FPPT | `asus-armoury` ppt_*, dev `0x001200A3` / `0x001200A0` / `0x001200C1`; GA403WM: 15-80 / 25-80 / 35-80 W on AC, 35/35/65 W max on battery | `debug.asuswmi.ppt_spl`, `ppt_sppt`, `ppt_fppt` (AC ranges enforced) | **done, untested** |
 | Battery charge limit | dev `0x00120057` | `debug.asuswmi.charge_limit` (20-100) | **done, untested** |
 | NVIDIA dynamic boost / temp target / TGP | dev `0x001200C0` / `0x001200C2` / `0x00120099` | read in `debug.asuswmi.status`; writes later (NullMoth driver decides the GPU clocks anyway) | read only |
@@ -49,6 +49,23 @@ sudo sysctl debug.asuswmi.dumpacpi=1        # DSDT + SSDTs as registry propertie
 
 The settings live in the EC; like on Linux they may be reset by the firmware at boot or on AC/battery changes, which is
 what asusd's profile-on-power-change logic is for.
+
+## What this BIOS does (DSDT from OpenCore SysReport, 2026-10-11)
+
+Decompiled from `/Volumes/ESP/SysReport/ACPI/DSDT.aml` with `iasl` (ACPICA source build; no Homebrew needed):
+
+* `ATKD.WMNB` begins with `CreateDWordField (Arg2, 0x10, IIA4)`: the argument buffer must be **20 bytes** (five dwords, as
+  Linux's `struct bios_args`). AsusWmi first sent 12 bytes, the method aborted before reading the method id, and every
+  call failed (`status` all `-`, `profile=1 -> failed`). Fixed; failures now log the IOReturn.
+* PPT writes (`DEVS`) go to AMD's `ALIB` function 0x0C with `UTDP`: `0x001200A3` SPL -> ALIB id 5, `0x001200A0` SPPT ->
+  id 7, `0x001200C1` FPPT -> id 6, value in mW (`IIA1 * 1000`). The `DSTS` read of those ids is a constant `0x00010000`
+  (present, value 0): the BIOS does not report the current limit, so `status` shows 0 for them.
+  `0x001200B0` / `0x001200B1` (APU / platform SPPT) are unsupported here.
+* `0x00120099` (NVIDIA base TGP) reads a constant 55 W; `0x001200C0` dynamic boost and `0x001200C2` temp target write ACPI
+  fields of `NPCF` / `PEGP` and notify the NVIDIA driver.
+* The profile (`0x00120075`), the charge limit (`0x00120057`) and anything else not listed go through `WCHK` + `W15H`: a
+  software SMI (port 0xB2, `WSCP = 0xAA`) into the BIOS SMM handler with the five args in the `AII0..4` fields.
+* `0x00090016` (GPU MUX) reads `DGPM`; `0x00090020` (dGPU disable) touches the EC and power-cycles the dGPU on write.
 
 ## Reading the ACPI tables
 
