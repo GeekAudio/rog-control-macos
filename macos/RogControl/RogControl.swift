@@ -601,6 +601,7 @@ struct RogControls: View {
                 RogSection(title: "About ROG Control") {
                     Text("ROG Zephyrus G14 · GA403WM").font(.headline)
                     Text("Settings are saved independently for AC and battery, then restored when your power source changes.").foregroundStyle(.secondary)
+                    Link("Created by thanhnndev · github.com/thanhnndev", destination: URL(string: "https://github.com/thanhnndev")!)
                     Link("Inspired by asusctl and the asus-linux community", destination: URL(string: "https://asus-linux.org")!)
                 }
             }
@@ -852,6 +853,7 @@ struct ContentView: View {
                     Toggle("Open at Login", isOn: Binding(get: { m.loginEnabled }, set: { m.setLogin($0) }))
                     Text(m.batteryLine)
                     Text(controls.gpuLine)
+                    Button("Created by thanhnndev (GitHub)") { NSWorkspace.shared.open(URL(string: "https://github.com/thanhnndev")!) }
                     Button("Quit ROG Control") { NSApp.terminate(nil) }
                 }.menuStyle(.borderlessButton).fixedSize().font(.caption)
                 Spacer()
@@ -979,11 +981,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         model.refresh(); model.loadCurve(); updateVisibility()
     }
     @objc func refreshNow() { model.refresh(); model.loadCurve() }
+    @objc func showAbout() {
+        let credits = NSMutableAttributedString(string: "Created by thanhnndev\ngithub.com/thanhnndev\n\nInspired by asusctl and the asus-linux community.",
+                                                attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.labelColor])
+        credits.addAttribute(.link, value: URL(string: "https://github.com/thanhnndev")!, range: (credits.string as NSString).range(of: "github.com/thanhnndev"))
+        NSApp.orderFrontStandardAboutPanel(options: [.credits: credits])
+        NSApp.activate(ignoringOtherApps: true)
+    }
     func setupMenus() {
         let menu = NSMenu()
         let appItem = NSMenuItem(); menu.addItem(appItem)
         let appMenu = NSMenu(); appItem.submenu = appMenu
-        appMenu.addItem(withTitle: "About ROG Control", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        let about = appMenu.addItem(withTitle: "About ROG Control", action: #selector(showAbout), keyEquivalent: "")
+        about.target = self
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide ROG Control", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(.separator())
