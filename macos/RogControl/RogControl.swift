@@ -639,15 +639,14 @@ struct RogControls: View {
     var lightingControls: some View {
         VStack(alignment: .leading, spacing: 8) {
             if m.st.lighting {
-                HStack(spacing: 6) {
-                    Text("Keyboard").font(.system(size: 12))
-                    ForEach(0...3, id: \.self) { v in
-                        ChoiceButton(title: ["Off", "Low", "Med", "High"][v], selected: m.st.kbd == v) { m.setKbd(v) }
-                            .disabled(m.st.kbd == nil)
-                    }
-                    Spacer()
-                }
-                .help("Keyboard backlight (Fn+F2 / Fn+F3 step it)")
+                KeyboardRow(level: m.st.kbd) { m.setKbd($0) }
+                slashControls
+            }
+        }
+    }
+    var slashControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if m.st.lighting {
                 HStack(spacing: 6) {
                     Toggle("Slash", isOn: Binding(get: { (m.st.slash.map { Slash(packed: $0).bright } ?? 0) > 0 }, set: { on in
                         var s = m.currentSlash; s.bright = on ? (UserDefaults.standard.object(forKey: "slash.on.bright") as? Int ?? 2) : 0
@@ -695,11 +694,33 @@ struct RogControls: View {
         }
     }
     var modes: some View {
+        ModeRow(active: m.activeMode, ac: m.st.ac, compact: compact) { m.choose($0) }
+    }
+    var gpuLine: String {
+        var s = "GPU: "
+        let mux = m.st.gpuMux
+        s += mux == ~0 ? "MUX unknown" : (mux & 1 == 0 ? "dGPU only (MUX)" : "Hybrid")
+        if m.st.dgpu != ~0 && m.st.dgpu & 1 != 0 { s += ", dGPU disabled" }
+        if m.st.baseTgp > 0 { s += ", base TGP \(m.st.baseTgp) W" }
+        return s
+    }
+}
+
+
+// The mode row and the keyboard-light row take plain values (what is active, which level) instead of reading the model:
+// the popover showed "Active: Silent" next to a Performance highlight that never moved. Their identity follows the value, so a
+// change always rebuilds them, whatever the observation path above them does.
+struct ModeRow: View {
+    let active: Mode?
+    let ac: Bool
+    let compact: Bool
+    let choose: (Mode) -> Void
+    var body: some View {
         HStack(spacing: compact ? 4 : 8) {
             ForEach(Mode.allCases) { mode in
-                let selected = m.activeMode == mode
-                let unavailable = mode == .turbo && !m.st.ac
-                Button { m.choose(mode) } label: {
+                let selected = active == mode
+                let unavailable = mode == .turbo && !ac
+                Button { choose(mode) } label: {
                     VStack(spacing: compact ? 5 : 8) {
                         Image(systemName: mode.symbol).font(.system(size: compact ? 16 : 20))
                         Text(mode.title).font(.system(size: compact ? 11 : 12, weight: .medium))
@@ -714,17 +735,25 @@ struct RogControls: View {
                 .help(unavailable ? "Turbo needs the AC adapter" : mode.title)
             }
         }
-    }
-    var gpuLine: String {
-        var s = "GPU: "
-        let mux = m.st.gpuMux
-        s += mux == ~0 ? "MUX unknown" : (mux & 1 == 0 ? "dGPU only (MUX)" : "Hybrid")
-        if m.st.dgpu != ~0 && m.st.dgpu & 1 != 0 { s += ", dGPU disabled" }
-        if m.st.baseTgp > 0 { s += ", base TGP \(m.st.baseTgp) W" }
-        return s
+        .id("mode-\(active?.rawValue ?? "none")-\(ac)")
     }
 }
 
+struct KeyboardRow: View {
+    let level: Int?
+    let set: (Int) -> Void
+    var body: some View {
+        HStack(spacing: 6) {
+            Text("Keyboard").font(.system(size: 12))
+            ForEach(0...3, id: \.self) { v in
+                ChoiceButton(title: ["Off", "Low", "Med", "High"][v], selected: level == v) { set(v) }.disabled(level == nil)
+            }
+            Spacer()
+        }
+        .id("kbd-\(level ?? -1)")
+        .help("Keyboard backlight (Fn+F2 / Fn+F3 step it)")
+    }
+}
 
 struct ChoiceButton: View {
     let title: String
@@ -741,19 +770,18 @@ struct ChoiceButton: View {
     }
 }
 
-// The popover shows RogControls' mode row, manual limits and lighting rows. Each is its own View with its own @ObservedObject:
-// calling `RogControls(...).modes` straight from ContentView.body left them without an observer, so SwiftUI kept the old
-// highlight (performance profile, keyboard light level) while the "Active: ..." label beside them had already changed.
+// The popover's manual limits and Slash rows are RogControls sections wrapped in their own View with its own @ObservedObject
+// (calling `RogControls(...).x` straight from ContentView.body leaves them without an observer). The mode row and the keyboard
+// light row are ModeRow / KeyboardRow, built in ContentView.body from plain values.
 struct PopoverPart: View {
-    enum Part { case modes, manual, lighting }
+    enum Part { case manual, slash }
     @ObservedObject var m: RogModel
     let part: Part
     @ViewBuilder var body: some View {
         let c = RogControls(m: m, page: .overview, compact: true)
         switch part {
-        case .modes: c.modes
         case .manual: c.manualControls
-        case .lighting: c.lightingControls
+        case .slash: c.slashControls
         }
     }
 }
@@ -779,7 +807,7 @@ struct ContentView: View {
                 quickStat(m.st.present ? "\(m.st.cpuFan)" : "–", "CPU RPM")
                 quickStat(m.st.present ? "\(m.st.gpuFan)" : "–", "GPU RPM")
             }
-            PopoverPart(m: m, part: .modes).disabled(!m.st.present)
+            ModeRow(active: m.activeMode, ac: m.st.ac, compact: true) { m.choose($0) }.disabled(!m.st.present)
             HStack {
                 Text("Active: \(m.modeLabel)").font(.caption).foregroundStyle(.secondary)
                 Spacer()
@@ -808,7 +836,8 @@ struct ContentView: View {
             }
             Divider()
             if m.st.lighting {
-                PopoverPart(m: m, part: .lighting).disabled(!m.st.present)
+                KeyboardRow(level: m.st.kbd) { m.setKbd($0) }.disabled(!m.st.present)
+                PopoverPart(m: m, part: .slash).disabled(!m.st.present)
                 inlineError(m.lightingError)
             } else {
                 Text("Keyboard / Slash unavailable").font(.caption).foregroundStyle(.secondary)
