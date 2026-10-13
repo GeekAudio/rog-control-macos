@@ -741,6 +741,23 @@ struct ChoiceButton: View {
     }
 }
 
+// The popover shows RogControls' mode row, manual limits and lighting rows. Each is its own View with its own @ObservedObject:
+// calling `RogControls(...).modes` straight from ContentView.body left them without an observer, so SwiftUI kept the old
+// highlight (performance profile, keyboard light level) while the "Active: ..." label beside them had already changed.
+struct PopoverPart: View {
+    enum Part { case modes, manual, lighting }
+    @ObservedObject var m: RogModel
+    let part: Part
+    @ViewBuilder var body: some View {
+        let c = RogControls(m: m, page: .overview, compact: true)
+        switch part {
+        case .modes: c.modes
+        case .manual: c.manualControls
+        case .lighting: c.lightingControls
+        }
+    }
+}
+
 // Primary surface: stable compact rows, immediate controls, optional details.
 struct ContentView: View {
     @ObservedObject var m: RogModel
@@ -762,7 +779,7 @@ struct ContentView: View {
                 quickStat(m.st.present ? "\(m.st.cpuFan)" : "–", "CPU RPM")
                 quickStat(m.st.present ? "\(m.st.gpuFan)" : "–", "GPU RPM")
             }
-            controls.modes.disabled(!m.st.present)
+            PopoverPart(m: m, part: .modes).disabled(!m.st.present)
             HStack {
                 Text("Active: \(m.modeLabel)").font(.caption).foregroundStyle(.secondary)
                 Spacer()
@@ -771,7 +788,7 @@ struct ContentView: View {
             inlineError(m.profileError)
             // Optional curve content scrolls; daily controls and footer stay in place.
             if m.settings.mode == .manual {
-                controls.manualControls.disabled(!m.st.present)
+                PopoverPart(m: m, part: .manual).disabled(!m.st.present)
             }
             Divider()
             HStack(spacing: 8) {
@@ -791,7 +808,7 @@ struct ContentView: View {
             }
             Divider()
             if m.st.lighting {
-                controls.lightingControls.disabled(!m.st.present)
+                PopoverPart(m: m, part: .lighting).disabled(!m.st.present)
                 inlineError(m.lightingError)
             } else {
                 Text("Keyboard / Slash unavailable").font(.caption).foregroundStyle(.secondary)
