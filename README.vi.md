@@ -30,6 +30,17 @@ Performance / Turbo), giới hạn công suất Manual, đường cong quạt, t
 nguồn, đèn bàn phím, đèn Slash, app RogControl. macOS 26 (Tahoe) **chưa** được kiểm tra. Các model ASUS khác chưa thử; dải
 giới hạn công suất là của GA403WM. Chi tiết từng tính năng và việc còn mở: [docs/ASUSCTL-MACOS.md](docs/ASUSCTL-MACOS.md).
 
+## Ảnh chụp
+
+<p align="center"><img src="docs/images/rogcontrol-popover.png" alt="RogControl menu bar panel" width="320">&nbsp;&nbsp;<img src="docs/images/rogcontrol-window.png" alt="RogControl window, Overview" width="560"></p>
+<p align="center"><img src="docs/images/fan-curves.png" alt="RogControl window, firmware fan curve" width="640"></p>
+
+## Release
+
+| Release | Nội dung |
+|---|---|
+| [rog-v1.0](https://github.com/thanhnndev/rog-control-macos/releases/tag/rog-v1.0) | `AsusWmi.kext`, `AmdCppc.kext`, `AmdCppcPolicy`, `RogControl.app`, `SHA256SUMS.txt`. Binary chép nguyên từ `kext-v1.1` của repo EFI; cùng checksum |
+
 ## Build
 
 Trên macOS có Xcode command line tools (không build kext được trên Linux):

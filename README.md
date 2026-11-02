@@ -31,6 +31,17 @@ settings, keyboard light, Slash lighting, the RogControl app. macOS 26 (Tahoe) h
 are untested; the power-limit ranges are the GA403WM's. Per-feature detail and the open items are in
 [docs/ASUSCTL-MACOS.md](docs/ASUSCTL-MACOS.md).
 
+## Screenshots
+
+<p align="center"><img src="docs/images/rogcontrol-popover.png" alt="RogControl menu bar panel" width="320">&nbsp;&nbsp;<img src="docs/images/rogcontrol-window.png" alt="RogControl window, Overview" width="560"></p>
+<p align="center"><img src="docs/images/fan-curves.png" alt="RogControl window, firmware fan curve" width="640"></p>
+
+## Releases
+
+| Release | Contents |
+|---|---|
+| [rog-v1.0](https://github.com/thanhnndev/rog-control-macos/releases/tag/rog-v1.0) | `AsusWmi.kext`, `AmdCppc.kext`, `AmdCppcPolicy`, `RogControl.app`, `SHA256SUMS.txt`. Binaries copied unchanged from `kext-v1.1` of the EFI repo; same checksums |
+
 ## Build
 
 On macOS with the Xcode command line tools (the kexts cannot be built on Linux):
