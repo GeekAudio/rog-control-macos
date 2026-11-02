@@ -172,4 +172,4 @@ for checking what `WMNB` does with each device id on this BIOS, and for the EC f
   ACPI matter. Writing the registers by hand dims the panel (confirmed by eye).
 * RogControl's `Dimmer` (the software overlay described above) was a workaround for this and is gone (removed 2026-10-12, since
   `NVRMEdpBL` works). Details, evidence, fix, install and undo:
-  [OLED-BRIGHTNESS-DPCD.md](OLED-BRIGHTNESS-DPCD.md). `AsusWmi` keeps leaving the EC level alone on the brightness keys.
+  [OLED-BRIGHTNESS-DPCD.md](https://github.com/thanhnndev/ga403wm-hackintosh/blob/main/docs/OLED-BRIGHTNESS-DPCD.md) (in the EFI repo). `AsusWmi` keeps leaving the EC level alone on the brightness keys.

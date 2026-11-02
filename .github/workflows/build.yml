@@ -1,0 +1,59 @@
+name: build
+
+# Builds the AsusWmi and AmdCppc kexts, the RogControl app and the AmdCppcPolicy daemon (ad-hoc signed), and runs the
+# fan-curve decoding test. A tag "v*" publishes the zips and SHA256SUMS.txt as a GitHub release.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build kexts
+        run: bash scripts/build.sh
+
+      - name: Fan-curve decoding test
+        run: bash scripts/test-rogcontrol.sh
+
+      - name: Build the app and the CPU policy daemon
+        run: |
+          bash scripts/build-rogcontrol.sh
+          bash scripts/build-amdcppc-policy.sh
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          for k in AsusWmi AmdCppc; do (cd build && zip -qry "../dist/$k.kext.zip" "$k.kext"); done
+          (cd build && zip -qry ../dist/RogControl.app.zip RogControl.app && zip -qj ../dist/AmdCppcPolicy.zip AmdCppcPolicy)
+          cp LICENSE dist/
+          (cd dist && shasum -a 256 *.zip LICENSE > SHA256SUMS.txt)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rog-control-${{ github.sha }}
+          path: dist/*
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: rog-control-${{ github.sha }}
+          path: dist
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" dist/* --repo "${{ github.repository }}" --title "${{ github.ref_name }}" --generate-notes --prerelease
