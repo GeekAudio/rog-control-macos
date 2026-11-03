@@ -56,6 +56,7 @@ giới hạn công suất là của GA403WM. Chi tiết từng tính năng và v
 
 | Release | Nội dung |
 |---|---|
+| [rogcontrol-v0.2.0](https://github.com/thanhnndev/rog-control-macos/releases/tag/rogcontrol-v0.2.0) | `RogControl-0.2.0.dmg`: app ROG mới (giao diện ROG, icon), mở DMG rồi kéo vào Applications. Kext giữ nguyên ở `rog-v1.0` |
 | [rog-v1.0](https://github.com/thanhnndev/rog-control-macos/releases/tag/rog-v1.0) | `AsusWmi.kext`, `AmdCppc.kext`, `AmdCppcPolicy`, `RogControl.app`, `SHA256SUMS.txt`. Binary chép nguyên từ `kext-v1.1` của repo EFI; cùng checksum |
 
 ## Build
@@ -68,6 +69,7 @@ bash scripts/build-amdcppc-policy.sh       # build/AmdCppcPolicy
 bash scripts/test-rogcontrol.sh            # test giải mã đường cong quạt, không ghi phần cứng
 bash scripts/build-rogcontrol.sh           # build/RogControl.app
 bash scripts/build-rogcontrol.sh --install # chép vào /Applications, chạy khi đăng nhập
+bash scripts/build-dmg.sh                  # build/RogControl-<version>.dmg, kéo thả vào Applications
 ```
 
 CI build tương tự trên `macos-14` và tải lên các file zip (ký ad-hoc, không notarize).

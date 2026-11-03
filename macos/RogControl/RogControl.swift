@@ -147,7 +147,8 @@ enum Mode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var title: String { ["silent": "Silent", "performance": "Performance", "turbo": "Turbo", "manual": "Custom"][rawValue]! }   // manual is shown as Custom
     var symbol: String {
-        ["silent": "leaf.fill", "performance": "gauge.with.dots.needle.67percent", "turbo": "flame.fill", "manual": "slider.horizontal.3"][rawValue]!
+        // one family: filled glyphs at one weight, drawn in the same chamfered badge (ModeBadge)
+        ["silent": "leaf.fill", "performance": "gauge.with.needle.fill", "turbo": "flame.fill", "manual": "dial.low.fill"][rawValue]!
     }
     var firmwareProfile: Int { self == .silent ? 2 : self == .turbo ? 1 : 0 }   // asus-wmi: 0 balanced, 1 overboost, 2 silent
     static func from(profile: Int?) -> Mode? { profile == 2 ? .silent : profile == 1 ? .turbo : profile == 0 ? .performance : nil }
@@ -483,6 +484,18 @@ struct ErrorLine: View {
 // ---- menu bar panel ------------------------------------------------------------------------------------------------------------
 // Same language as the window (dark, chamfered, one red), sized for a glance: temperature leads, then the mode, then the two
 // settings people change by hand (charge limit, keyboard light). Setup lives in the window.
+// The mode glyph in a small chamfered plate: red with a white glyph when active, raised grey otherwise.
+struct ModeBadge: View {
+    let mode: Mode, active: Bool, size: CGFloat
+    var body: some View {
+        Image(systemName: mode.symbol).font(.system(size: size * 0.5, weight: .semibold))
+            .foregroundStyle(active ? Color.white : T.dim)
+            .frame(width: size, height: size)
+            .background(active ? T.red : T.raised, in: Chamfer(cut: size * 0.25))
+            .accessibilityHidden(true)
+    }
+}
+
 struct PopoverTile: View {
     let mode: Mode, selected: Bool, unavailable: Bool, subtitle: String
     let action: () -> Void
@@ -491,8 +504,7 @@ struct PopoverTile: View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: 7) {
                 HStack(spacing: 7) {
-                    Image(systemName: mode.symbol).font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(selected ? T.red : T.dim).frame(width: 16, height: 16)
+                    ModeBadge(mode: mode, active: selected, size: 20)
                     Text(mode.title).font(T.num(11.5)).foregroundStyle(T.text).lineLimit(1).fixedSize()
                     Spacer(minLength: 0)
                 }
@@ -1168,8 +1180,7 @@ struct DashboardPage: View {
             Card(cut: 12, pad: 14, active: active, stretch: true) {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
-                        Image(systemName: mode.symbol).font(.system(size: 16, weight: .semibold)).foregroundStyle(active ? T.red : T.dim)
-                            .frame(width: 20, height: 20)
+                        ModeBadge(mode: mode, active: active, size: 26)
                         Spacer()
                         if active { Text("ACTIVE").font(.system(size: 9, weight: .bold)).tracking(1.2).foregroundStyle(T.red) }
                     }
@@ -1558,6 +1569,15 @@ struct GeneralPage: View {
 final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSWindowDelegate {
     let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     let popover = NSPopover()
+    var popoverHost: NSHostingController<ContentView>!
+    // The popover hangs from this 1 pt window at the menu bar's bottom edge, under the icon. Anchoring to the status button
+    // itself puts the popover over the bar when the menu bar auto-hides: the button's window then sits above the screen.
+    let anchor: NSWindow = {
+        let w = NSWindow(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: true)
+        w.isOpaque = false; w.backgroundColor = .clear; w.hasShadow = false; w.ignoresMouseEvents = true
+        w.level = .statusBar; w.collectionBehavior = [.canJoinAllSpaces, .transient, .ignoresCycle]
+        return w
+    }()
     var model: RogModel!
     var window: NSWindow?
 
@@ -1567,7 +1587,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         popover.animates = false
         popover.delegate = self
         popover.appearance = NSAppearance(named: .darkAqua)   // the panel uses the window's dark ROG look
-        popover.contentViewController = NSHostingController(rootView: ContentView(m: model, openWindow: { [weak self] page, adv in self?.open(page, advanced: adv) }))
+        popoverHost = NSHostingController(rootView: ContentView(m: model, openWindow: { [weak self] page, adv in self?.open(page, advanced: adv) }))
+        popoverHost.sizingOptions = .preferredContentSize   // follow SwiftUI's size, so a new line grows the panel downward
+        popover.contentViewController = popoverHost
         item.button?.target = self
         item.button?.action = #selector(toggle)
         model.onChange = { [weak self] in self?.updateIcon() }
@@ -1582,10 +1604,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         model.refresh()
         model.loadCurve()
         model.visible = true
-        popover.show(relativeTo: b.bounds, of: b, preferredEdge: .minY)
+        popover.contentSize = popoverHost.view.fittingSize   // size before showing; a later resize would grow it upward off screen
+        if let bw = b.window {
+            let r = bw.convertToScreen(b.convert(b.bounds, to: nil))
+            let screen = NSScreen.screens.first { $0.frame.minX <= r.midX && r.midX < $0.frame.maxX } ?? NSScreen.main
+            let bottom = (screen?.frame.maxY ?? r.minY + bw.frame.height) - bw.frame.height
+            anchor.setFrame(NSRect(x: r.minX, y: bottom, width: r.width, height: 1), display: false)
+            anchor.orderFront(nil)
+            popover.show(relativeTo: anchor.contentView!.bounds, of: anchor.contentView!, preferredEdge: .minY)
+        } else {
+            popover.show(relativeTo: b.bounds, of: b, preferredEdge: .minY)
+        }
         popover.contentViewController?.view.window?.makeKey()
     }
-    func popoverDidClose(_ n: Notification) { updateVisibility() }
+    func popoverDidClose(_ n: Notification) { anchor.orderOut(nil); updateVisibility() }
     func updateVisibility() { model.visible = popover.isShown || window?.isVisible == true }
     func windowWillClose(_ n: Notification) {
         model.visible = popover.isShown

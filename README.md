@@ -57,6 +57,7 @@ are untested; the power-limit ranges are the GA403WM's. Per-feature detail and t
 
 | Release | Contents |
 |---|---|
+| [rogcontrol-v0.2.0](https://github.com/thanhnndev/rog-control-macos/releases/tag/rogcontrol-v0.2.0) | `RogControl-0.2.0.dmg`: the redesigned app (ROG look, app icon); open it and drag the app into Applications. Kexts unchanged, still in `rog-v1.0` |
 | [rog-v1.0](https://github.com/thanhnndev/rog-control-macos/releases/tag/rog-v1.0) | `AsusWmi.kext`, `AmdCppc.kext`, `AmdCppcPolicy`, `RogControl.app`, `SHA256SUMS.txt`. Binaries copied unchanged from `kext-v1.1` of the EFI repo; same checksums |
 
 ## Build
@@ -69,6 +70,7 @@ bash scripts/build-amdcppc-policy.sh       # build/AmdCppcPolicy
 bash scripts/test-rogcontrol.sh            # fan-curve decoding, never writes hardware
 bash scripts/build-rogcontrol.sh           # build/RogControl.app
 bash scripts/build-rogcontrol.sh --install # copy to /Applications, start at login
+bash scripts/build-dmg.sh                  # build/RogControl-<version>.dmg, drag-to-Applications installer
 ```
 
 CI builds the same on `macos-14` and uploads the zips (ad-hoc signed; nothing is notarized).
