@@ -10,6 +10,16 @@ cd "$(dirname "$0")/.."
 APP=build/RogControl.app
 rm -rf "$APP"; mkdir -p "$APP/Contents/MacOS"
 cp macos/RogControl/Info.plist "$APP/Contents/Info.plist"
+# App icon: the layered Icon Composer file compiles to Assets.car (Liquid Glass, dark and tinted on Tahoe) plus AppIcon.icns
+# for macOS 13-15. Needs Xcode's actool; without it the app builds with the generic icon.
+mkdir -p "$APP/Contents/Resources"
+if xcrun --find actool >/dev/null 2>&1; then
+  xcrun actool "$PWD/macos/RogControl/icon/AppIcon.icon" --compile "$PWD/$APP/Contents/Resources" --app-icon AppIcon --platform macosx \
+    --minimum-deployment-target 13.0 --output-partial-info-plist "$PWD/$APP/icon-partial.plist" >/dev/null
+  rm -f "$APP/icon-partial.plist"
+else
+  echo "actool not found (install Xcode): building without the app icon" >&2
+fi
 swiftc -O -target x86_64-apple-macos13.0 macos/RogControl/RogControl.swift -o "$APP/Contents/MacOS/RogControl" -framework IOKit -framework SwiftUI
 codesign --force --sign - "$APP" >/dev/null
 echo "built $APP"
