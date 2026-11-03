@@ -1583,7 +1583,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
 
     func applicationDidFinishLaunching(_ n: Notification) {
         model = RogModel()
-        popover.behavior = .transient
+        popover.behavior = .applicationDefined   // closing is ours: outside clicks, Esc, app deactivation, the icon (toggle)
         popover.animates = false
         popover.delegate = self
         popover.appearance = NSAppearance(named: .darkAqua)   // the panel uses the window's dark ROG look
@@ -1615,9 +1615,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         } else {
             popover.show(relativeTo: b.bounds, of: b, preferredEdge: .minY)
         }
+        NSApp.activate(ignoringOtherApps: true)   // a menu bar app is never active on its own, so .transient never sees the outside click
         popover.contentViewController?.view.window?.makeKey()
+        watchOutsideClicks()
     }
-    func popoverDidClose(_ n: Notification) { anchor.orderOut(nil); updateVisibility() }
+    // Close on any click outside the panel: in other apps (global monitor), in this app's own window (local monitor), or when
+    // the app stops being active. Clicks on the status button are left to toggle().
+    var clickMonitors: [Any] = []
+    func watchOutsideClicks() {
+        stopWatchingClicks()
+        let mask: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        if let g = NSEvent.addGlobalMonitorForEvents(matching: mask, handler: { [weak self] _ in self?.popover.performClose(nil) }) {
+            clickMonitors.append(g)
+        }
+        if let l = NSEvent.addLocalMonitorForEvents(matching: mask, handler: { [weak self] e in
+            guard let self, self.popover.isShown else { return e }
+            let inPanel = e.window === self.popover.contentViewController?.view.window
+            let onButton = e.window === self.item.button?.window
+            if !inPanel && !onButton { self.popover.performClose(nil) }
+            return e
+        }) { clickMonitors.append(l) }
+        if let k = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { [weak self] e in
+            guard let self, self.popover.isShown, e.keyCode == 53 else { return e }   // Esc
+            self.popover.performClose(nil); return nil
+        }) { clickMonitors.append(k) }
+    }
+    func stopWatchingClicks() { clickMonitors.forEach(NSEvent.removeMonitor); clickMonitors = [] }
+    func applicationDidResignActive(_ n: Notification) { if popover.isShown { popover.performClose(nil) } }
+    func popoverDidClose(_ n: Notification) { stopWatchingClicks(); anchor.orderOut(nil); updateVisibility() }
     func updateVisibility() { model.visible = popover.isShown || window?.isVisible == true }
     func windowWillClose(_ n: Notification) {
         model.visible = popover.isShown
