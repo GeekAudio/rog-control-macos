@@ -1,5 +1,7 @@
 # rog-control-macos
 
+<p align="center"><img src="docs/images/app-icon.png" alt="ROG Control app icon" width="128"></p>
+
 ROG Control Center for macOS on the **ASUS ROG Zephyrus G14 (GA403WM)**: performance profiles, CPU power limits, fan
 curves and speeds, battery charge limit, keyboard light and Slash lighting from a menu bar app, backed by two kexts.
 
@@ -20,7 +22,7 @@ boot without them (OpenCore picker, remove the kext from `config.plist`).
 |---|---|---|
 | `AsusWmi.kext` | `kexts/AsusWmi` | Matches the ACPI `ATKD` device (`PNP0C14`, `_UID "ATK"`) and calls its WMI methods like `asus-wmi`: platform profile, PPT limits (range-checked for AC or battery), fan curves, fan speeds, charge limit, keyboard light (N-KEY HID report), Slash lighting, ATKD hotkeys |
 | `AmdCppc.kext` | `kexts/AmdCppc` | Ryzen AI 9 HX 370: Tctl and package power (`debug.amdcppc.sensors`), per-CPU clocks (`debug.amdcppc.freq`), CPPC boost and EPP controls |
-| `RogControl.app` | `macos/RogControl` | SwiftUI menu bar app plus a window (Overview, Performance, Lighting, Battery & Display, Settings). Talks to AsusWmi through its user client, no sudo |
+| `RogControl.app` | `macos/RogControl` | SwiftUI menu bar app plus a window (Performance, Battery, Lighting, General). Talks to AsusWmi through its user client, no sudo |
 | `AmdCppcPolicy` | `macos/AmdCppcPolicy` | Root LaunchDaemon that applies the CPPC policy after boot and wake |
 
 ## Status
@@ -34,7 +36,22 @@ are untested; the power-limit ranges are the GA403WM's. Per-feature detail and t
 ## Screenshots
 
 <p align="center"><img src="docs/images/rogcontrol-popover.png" alt="RogControl menu bar panel" width="320">&nbsp;&nbsp;<img src="docs/images/rogcontrol-window.png" alt="RogControl window, Performance" width="560"></p>
-<p align="center"><img src="docs/images/fan-curves.png" alt="RogControl window, Performance › Advanced: custom limits and firmware fan curve" width="640"></p>
+<p align="center"><em>Menu bar panel and the Performance page</em></p>
+
+<p align="center"><img src="docs/images/fan-curves.png" alt="RogControl window, Performance › Advanced: custom limits and firmware fan curve" width="720"></p>
+<p align="center"><em>Performance › Advanced: Custom power limits in plain words and the firmware fan curve</em></p>
+
+<p align="center"><img src="docs/images/rogcontrol-battery.png" alt="RogControl window, Battery" width="440">&nbsp;&nbsp;<img src="docs/images/rogcontrol-lighting.png" alt="RogControl window, Lighting" width="440"></p>
+<p align="center"><em>Battery (charge limit presets, health) and Lighting (Slash, keyboard)</em></p>
+
+<p align="center"><img src="docs/images/rogcontrol-general.png" alt="RogControl window, General" width="440">&nbsp;&nbsp;<img src="docs/images/rogcontrol-offline.png" alt="RogControl window without AsusWmi loaded" width="440"></p>
+<p align="center"><em>General, and the window when AsusWmi is not loaded</em></p>
+
+<p align="center"><img src="docs/images/rogcontrol-popover-offline.png" alt="RogControl menu bar panel without AsusWmi loaded" width="320"></p>
+<p align="center"><em>Panel when AsusWmi is not loaded: controls are off, nothing is guessed</em></p>
+
+<p align="center"><img src="docs/images/logo-concepts.png" alt="App icon concepts" width="720"></p>
+<p align="center"><em>App icon concepts; C (Slash shard) was chosen. Screenshots are offscreen renders with sample data.</em></p>
 
 ## Releases
 
