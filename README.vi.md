@@ -1,5 +1,7 @@
 # rog-control-macos
 
+<p align="center"><img src="docs/images/app-icon.png" alt="ROG Control app icon" width="128"></p>
+
 ROG Control Center cho macOS trên **ASUS ROG Zephyrus G14 (GA403WM)**: chế độ hiệu năng, giới hạn công suất CPU, đường cong
 và tốc độ quạt, giới hạn sạc pin, đèn bàn phím và đèn Slash, từ một app trên thanh menu, chạy trên hai kext.
 
@@ -20,7 +22,7 @@ mã asusctl nào ở đây; xem [NOTICE.md](NOTICE.md).
 |---|---|---|
 | `AsusWmi.kext` | `kexts/AsusWmi` | Khớp thiết bị ACPI `ATKD` (`PNP0C14`, `_UID "ATK"`) và gọi các hàm WMI như `asus-wmi`: profile, giới hạn PPT (kiểm tra theo nguồn AC hoặc pin), đường cong quạt, tốc độ quạt, giới hạn sạc, đèn bàn phím (báo cáo HID của N-KEY), đèn Slash, phím nóng ATKD |
 | `AmdCppc.kext` | `kexts/AmdCppc` | Ryzen AI 9 HX 370: Tctl và công suất package (`debug.amdcppc.sensors`), xung nhịp từng CPU (`debug.amdcppc.freq`), điều khiển CPPC boost và EPP |
-| `RogControl.app` | `macos/RogControl` | App SwiftUI trên thanh menu kèm cửa sổ (Overview, Performance, Lighting, Battery & Display, Settings). Nói chuyện với AsusWmi qua user client, không cần sudo |
+| `RogControl.app` | `macos/RogControl` | App SwiftUI trên thanh menu kèm cửa sổ (Performance, Battery, Lighting, General). Nói chuyện với AsusWmi qua user client, không cần sudo |
 | `AmdCppcPolicy` | `macos/AmdCppcPolicy` | LaunchDaemon chạy root, áp chính sách CPPC sau khi khởi động và thức dậy |
 
 ## Trạng thái
@@ -33,7 +35,22 @@ giới hạn công suất là của GA403WM. Chi tiết từng tính năng và v
 ## Ảnh chụp
 
 <p align="center"><img src="docs/images/rogcontrol-popover.png" alt="RogControl menu bar panel" width="320">&nbsp;&nbsp;<img src="docs/images/rogcontrol-window.png" alt="RogControl window, Performance" width="560"></p>
-<p align="center"><img src="docs/images/fan-curves.png" alt="RogControl window, Performance › Advanced: custom limits and firmware fan curve" width="640"></p>
+<p align="center"><em>Panel trên thanh menu và trang Performance</em></p>
+
+<p align="center"><img src="docs/images/fan-curves.png" alt="RogControl window, Performance › Advanced: custom limits and firmware fan curve" width="720"></p>
+<p align="center"><em>Performance › Advanced: giới hạn công suất Custom bằng lời dễ hiểu và đường cong quạt của firmware</em></p>
+
+<p align="center"><img src="docs/images/rogcontrol-battery.png" alt="RogControl window, Battery" width="440">&nbsp;&nbsp;<img src="docs/images/rogcontrol-lighting.png" alt="RogControl window, Lighting" width="440"></p>
+<p align="center"><em>Battery (mức giới hạn sạc, độ chai) và Lighting (Slash, bàn phím)</em></p>
+
+<p align="center"><img src="docs/images/rogcontrol-general.png" alt="RogControl window, General" width="440">&nbsp;&nbsp;<img src="docs/images/rogcontrol-offline.png" alt="RogControl window without AsusWmi loaded" width="440"></p>
+<p align="center"><em>General, và cửa sổ khi AsusWmi chưa được nạp</em></p>
+
+<p align="center"><img src="docs/images/rogcontrol-popover-offline.png" alt="RogControl menu bar panel without AsusWmi loaded" width="320"></p>
+<p align="center"><em>Panel khi AsusWmi chưa được nạp: tắt điều khiển, không hiện số đoán</em></p>
+
+<p align="center"><img src="docs/images/logo-concepts.png" alt="App icon concepts" width="720"></p>
+<p align="center"><em>Các phương án icon; chọn C (Slash shard). Ảnh chụp là bản render offscreen với dữ liệu mẫu.</em></p>
 
 ## Release
 
