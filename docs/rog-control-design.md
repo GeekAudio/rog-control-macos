@@ -12,13 +12,19 @@ ROG Control is primarily a menu bar hardware utility. Daily adjustments should b
 
 Taste v2 targets web landing pages and redesigns. It is not the foundation for this native utility. The confirmed user requirement is frequent interaction through the menu bar. Per-feature usage frequency has not been measured.
 
+## Visual language
+
+The panel and the window share one dark ROG look: one red accent (amber only for warnings), chamfered cards with the top-right corner cut, and the lid's Slash LED segments as slanted bars for fan speed, mode level and battery charge. Numbers use the expanded system width; labels are small tracked capitals. Both surfaces are always dark. The app icon ("Slash shard": a chamfered plate cut by three Slash segments) is a layered Icon Composer file in `macos/RogControl/icon`, compiled by `actool` into Assets.car (Liquid Glass, dark and tinted on Tahoe) and AppIcon.icns for macOS 13 to 15. No ASUS or ROG marks are used.
+
 ## Primary panel
 
-The panel retains direct performance mode selection, CPU temperature/package power, CPU/GPU RPM, charge presets, keyboard brightness, and Slash settings. These use compact rows without section cards or a page-sized scroll area. Manual exposes power sliders, fan base, and Apply directly under the modes. Slider changes remain rounded to integer watts without drawing a tick for every watt.
+Only what is used daily: CPU temperature (the one large number) with package power and fan speeds, the four modes as a 2x2 grid (Silent, Performance, Turbo, Custom), the charge limit and the keyboard light. Turbo is disabled on battery with "Needs charger". Custom shows "Set up…" until limits are saved and then opens the window at Performance › Advanced. After an automatic switch on plug or unplug, one line says what changed. Power limits are not in the panel.
 
-Hardware-confirmed mode, charge limit, keyboard brightness, and Slash controls are distinguished from saved preferences. Profile, charging, and lighting failures appear beside the relevant controls. Manual changes are marked as not applied until saved. Changing fan base updates the reference curve without claiming that the preview has been applied.
+## Window
 
-Fan curves are available in an optional disclosure. Only that detail region scrolls; its height is bounded for the screen. Open at Login, health/graphics details, and Quit live in Settings. Open app has a visible text label.
+Performance shows gauges, fan bars, a live temperature and power chart, mode cards and the mode used on the charger and on battery. Performance › Advanced holds Custom limits in plain words (Burst, Short boost, Sustained, with FPPT/SPPT/SPL codes as small labels), a picture of how the CPU uses them, Save to Custom and the firmware fan curve. Battery, Lighting (Slash and keyboard) and General complete it.
+
+Motion is brief: numbers roll on macOS 14+, gauges and segments ease, mode selection animates; Reduce Motion turns the panel's motion off. Nothing spins.
 
 ## Fan curves
 
@@ -32,7 +38,7 @@ Invalid endpoints are omitted with a visible notice, not clamped or assigned a m
 
 Build with `bash scripts/build-rogcontrol.sh`; install and relaunch with `bash scripts/build-rogcontrol.sh --install`. A regular launch opens the app window; `--background` runs in the menu bar. Closing the window keeps the utility running. AC/battery preferences remain independent.
 
-The window retains Overview, Performance, Lighting, Battery & Display, and Settings, with shared bindings. Command-0 opens it; Command-R refreshes; Command-W closes; Command-M minimizes; Command-Q quits. Geometry is saved.
+The window has Performance, Battery, Lighting and General. Command-0 opens it; Command-R refreshes; Command-W closes; Command-M minimizes; Command-Q quits. Geometry is saved.
 
 ## Verification
 
