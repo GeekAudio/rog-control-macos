@@ -481,65 +481,40 @@ struct ErrorLine: View {
 }
 
 // ---- menu bar panel ------------------------------------------------------------------------------------------------------------
+// Same language as the window (dark, chamfered, one red), sized for a glance: temperature leads, then the mode, then the two
+// settings people change by hand (charge limit, keyboard light). Setup lives in the window.
 struct PopoverTile: View {
     let mode: Mode, selected: Bool, unavailable: Bool, subtitle: String
     let action: () -> Void
     @State private var hover = false
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 8) {
-                ZStack {
-                    Circle().fill(selected ? Color.accentColor : Color.primary.opacity(0.09))
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 7) {
                     Image(systemName: mode.symbol).font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(selected ? Color.white : Color.primary)
+                        .foregroundStyle(selected ? T.red : T.dim).frame(width: 16, height: 16)
+                    Text(mode.title).font(T.num(11.5)).foregroundStyle(T.text).lineLimit(1).fixedSize()
+                    Spacer(minLength: 0)
                 }
-                .frame(width: 28, height: 28)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(mode.title).font(.system(size: 12, weight: .semibold)).lineLimit(1).fixedSize()
-                    Text(subtitle).font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(1)
+                HStack {
+                    Text(subtitle).font(.system(size: 10.5)).foregroundStyle(T.dim).lineLimit(1)
+                    Spacer(minLength: 4)
+                    Segments(lit: mode.level, total: 4, height: 4, color: selected ? T.red : Color.white.opacity(0.4)).frame(width: 34)
                 }
-                Spacer(minLength: 0)
             }
-            .padding(.leading, 9).padding(.trailing, 6).frame(height: 50)
-            .background(Color.primary.opacity(selected ? 0.12 : hover ? 0.08 : 0.045), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .padding(.horizontal, 10).frame(height: 54)
+            .background(selected ? T.red.opacity(0.12) : hover ? T.raised : T.surface, in: Chamfer(cut: 9))
+            .overlay(Chamfer(cut: 9).stroke(selected ? T.red : T.line, lineWidth: 1))
+            .contentShape(Chamfer(cut: 9))
         }
         .buttonStyle(.plain)
         .disabled(unavailable)
-        .opacity(unavailable ? 0.45 : 1)
+        .opacity(unavailable ? 0.4 : 1)
         .onHover { hover = $0 }
         .accessibilityLabel(mode.title)
         .accessibilityHint(subtitle)
         .accessibilityAddTraits(selected ? .isSelected : [])
         .help(unavailable ? "Turbo needs the charger" : mode.detail)
-    }
-}
-
-// Keyboard light and charge limit take plain values and rebuild when the value changes (an older observation bug left the
-// highlight on a stale level while the label had moved on).
-struct KeyboardPicker: View {
-    let level: Int?
-    let set: (Int) -> Void
-    var body: some View {
-        Picker("Keyboard light", selection: Binding(get: { level ?? -1 }, set: { set($0) })) {
-            ForEach(0...3, id: \.self) { Text(["Off", "Low", "Med", "High"][$0]).tag($0) }
-        }
-        .pickerStyle(.segmented).labelsHidden().fixedSize()
-        .disabled(level == nil)
-        .id("kbd-\(level ?? -1)")
-        .help("Keyboard backlight (Fn+F2 / Fn+F3 step it)")
-    }
-}
-struct ChargePicker: View {
-    let limit: Int?
-    let set: (Int) -> Void
-    var body: some View {
-        Picker("Charge limit", selection: Binding(get: { limit ?? -1 }, set: { set($0) })) {
-            ForEach([60, 80, 100], id: \.self) { Text("\($0)%").tag($0) }
-        }
-        .pickerStyle(.segmented).labelsHidden().fixedSize()
-        .disabled(limit == nil)
-        .id("charge-\(limit ?? -1)")
     }
 }
 
@@ -549,55 +524,91 @@ struct ContentView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             if !m.st.present {
                 Label("AsusWmi is not loaded. Controls are off until the kext loads.", systemImage: "exclamationmark.triangle.fill")
-                    .font(.system(size: 11)).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    .font(.system(size: 11)).foregroundStyle(T.amber).fixedSize(horizontal: false, vertical: true)
             }
             header
             modes
             VStack(spacing: 0) {
-                row("Charge limit") { ChargePicker(limit: m.st.charge) { m.setCharge($0) }.controlSize(.small) }
+                row("Charge limit") {
+                    let opts = [60, 80, 100]
+                    Pills(items: opts.map { "\($0)%" }, selected: m.st.charge.flatMap { opts.firstIndex(of: $0) }, minWidth: 30, pad: 7, label: "Charge limit") {
+                        m.setCharge(opts[$0])
+                    }
+                    .disabled(m.st.charge == nil)
+                }
                 if m.st.lighting {
-                    Divider().padding(.leading, 12)
-                    row("Keyboard") { KeyboardPicker(level: m.st.kbd) { m.setKbd($0) }.controlSize(.small) }
+                    Rectangle().fill(T.line).frame(height: 1)
+                    row("Keyboard") {
+                        Pills(items: ["Off", "Low", "Med", "High"], selected: m.st.kbd, minWidth: 30, pad: 7, label: "Keyboard") { m.setKbd($0) }
+                            .disabled(m.st.kbd == nil)
+                    }
                 }
             }
-            .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .padding(.horizontal, 12)
+            .background(T.surface, in: Chamfer(cut: 10))
+            .overlay(Chamfer(cut: 10).stroke(T.line))
             .disabled(!m.st.present)
             ErrorLine(text: m.chargeError)
             ErrorLine(text: m.lightingError)
-            Divider()
             footer
         }
-        .padding(14).frame(width: 320)
+        .padding(12).frame(width: 320)
+        .background(T.bg)
+        .environment(\.colorScheme, .dark)
+        .tint(T.red)
     }
 
     var header: some View {
-        HStack(alignment: .center, spacing: 12) {
-            Text(Fmt.temp(m.tctl)).font(.system(size: 40, weight: .semibold, design: .rounded)).monospacedDigit()
-                .foregroundStyle((m.tctl ?? 0) >= 90 ? Color.red : Color.primary)
-                .rollingNumber(m.tctl ?? 0)
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.3), value: m.tctl)
-            VStack(alignment: .leading, spacing: 2) {
-                Text((m.tctl ?? 0) >= 90 ? "CPU temperature · hot" : "CPU temperature").font(.system(size: 11)).foregroundStyle(.secondary)
-                Text(m.st.present ? "\(Fmt.watts(m.watts))  ·  fans \(String(m.st.cpuFan)) / \(String(m.st.gpuFan)) rpm" : "No sensor data")
-                    .font(.system(size: 11)).monospacedDigit().foregroundStyle(.secondary)
+        HStack(alignment: .center, spacing: 14) {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .firstTextBaseline, spacing: 2) {
+                    Text(m.tctl.map { String(format: "%.0f", $0) } ?? "–").font(T.num(40)).monospacedDigit()
+                        .foregroundStyle((m.tctl ?? 0) >= 90 ? T.red : T.text)
+                        .rollingNumber(m.tctl ?? 0)
+                        .animation(reduceMotion ? nil : .easeOut(duration: 0.3), value: m.tctl)
+                    Text("°C").font(T.num(14, .medium)).foregroundStyle(T.dim)
+                }
+                Caps((m.tctl ?? 0) >= 90 ? "CPU · hot" : "CPU")
             }
             Spacer(minLength: 0)
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(alignment: .firstTextBaseline, spacing: 3) {
+                    Caps("Power"); Spacer()
+                    Text(m.watts.map { String(format: "%.1f", $0) } ?? "–").font(T.num(12)).monospacedDigit().foregroundStyle(T.text)
+                    Text("W").font(.system(size: 9.5)).foregroundStyle(T.dim)
+                }
+                fan("CPU fan", m.st.cpuFan)
+                fan("GPU fan", m.st.gpuFan)
+            }
+            .frame(width: 136)
         }
+        .padding(12)
+        .background(T.surface, in: Chamfer(cut: 12))
+        .overlay(Chamfer(cut: 12).stroke(T.line))
         .accessibilityElement(children: .combine)
+    }
+
+    func fan(_ name: String, _ rpm: Int) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .firstTextBaseline) {
+                Caps(name); Spacer()
+                Text(verbatim: !m.st.present ? "–" : rpm == 0 ? "Off" : String(rpm)).font(T.num(10.5, .medium)).monospacedDigit().foregroundStyle(T.text)
+            }
+            Segments(lit: m.st.present ? min(12, rpm * 12 / 6500) : 0, total: 12, height: 4)
+        }
     }
 
     var modes: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Mode").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
-                Spacer()
-                Label(m.st.ac ? "On charger" : "On battery", systemImage: m.st.ac ? "powerplug.fill" : "battery.75percent")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            HStack(spacing: 5) {
+                Caps("Mode"); Spacer()
+                Image(systemName: m.st.ac ? "powerplug.fill" : "battery.75percent").font(.system(size: 9.5)).foregroundStyle(T.dim)
+                Text(m.st.ac ? "On charger" : "On battery").font(.system(size: 10.5)).foregroundStyle(T.dim)
             }
-            LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)], spacing: 6) {
                 ForEach(Mode.allCases) { mode in
                     let unavailable = mode == .turbo && !m.st.ac
                     let sub = unavailable ? "Needs charger" : (mode == .manual && !m.customReady) ? "Set up…" : mode.short
@@ -606,12 +617,13 @@ struct ContentView: View {
                     }
                 }
             }
-            .id("modes-\(m.activeMode?.rawValue ?? "none")-\(m.st.ac)")
             .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: m.activeMode)
             .disabled(!m.st.present)
             if let note = m.recentAutoNote {
-                Label(note, systemImage: "arrow.triangle.2.circlepath").font(.system(size: 11)).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true).padding(.top, 2)
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.triangle.2.circlepath").font(.system(size: 10)).foregroundStyle(T.red)
+                    Text(note).font(.system(size: 10.5)).foregroundStyle(T.dim).fixedSize(horizontal: false, vertical: true)
+                }
             }
             ErrorLine(text: m.profileError)
         }
@@ -619,8 +631,14 @@ struct ContentView: View {
 
     var footer: some View {
         HStack {
-            Button { openWindow(m.page, false) } label: { Text("Open ROG Control…").font(.system(size: 12)) }
-                .buttonStyle(.plain)
+            Button { openWindow(m.page, false) } label: {
+                HStack(spacing: 6) {
+                    Text("Open ROG Control").font(.system(size: 11.5, weight: .medium))
+                    Image(systemName: "arrow.up.right").font(.system(size: 9, weight: .bold)).foregroundStyle(T.dim)
+                }
+                .padding(.horizontal, 10).frame(height: 26)
+            }
+            .buttonStyle(RogButtonStyle(cut: 6))
             Spacer()
             Menu {
                 Toggle("Open at Login", isOn: Binding(get: { m.loginEnabled }, set: { m.setLogin($0) }))
@@ -628,17 +646,16 @@ struct ContentView: View {
                 Button("Created by thanhnndev (GitHub)") { NSWorkspace.shared.open(URL(string: "https://github.com/thanhnndev")!) }
                 Button("Quit ROG Control") { NSApp.terminate(nil) }
             } label: {
-                Image(systemName: "ellipsis.circle").font(.system(size: 14))
+                Image(systemName: "ellipsis").font(.system(size: 12, weight: .bold)).foregroundStyle(T.dim)
+                    .frame(width: 26, height: 26).background(T.raised, in: Chamfer(cut: 6))
             }
-            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+            .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
             .accessibilityLabel("More")
         }
-        .padding(.horizontal, 2)
     }
 
     private func row<C: View>(_ title: String, @ViewBuilder control: () -> C) -> some View {
-        HStack { Text(title).font(.system(size: 12)); Spacer(minLength: 8); control() }
-            .padding(.horizontal, 12).frame(height: 38)
+        HStack { Text(title).font(.system(size: 11.5)).foregroundStyle(T.text); Spacer(minLength: 8); control() }.frame(height: 40)
     }
 }
 
@@ -759,6 +776,7 @@ struct Pills: View {
     let items: [String]
     let selected: Int?
     var minWidth: CGFloat = 34
+    var pad: CGFloat = 8
     var label = ""
     let pick: (Int) -> Void
     var body: some View {
@@ -766,7 +784,7 @@ struct Pills: View {
             ForEach(items.indices, id: \.self) { i in
                 Button { pick(i) } label: {
                     Text(items[i]).font(.system(size: 11.5, weight: i == selected ? .semibold : .regular))
-                        .frame(minWidth: minWidth).padding(.horizontal, 8).frame(height: 26)
+                        .fixedSize().frame(minWidth: minWidth).padding(.horizontal, pad).frame(height: 26)
                 }
                 .buttonStyle(RogButtonStyle(selected: i == selected, cut: 5))
                 .accessibilityLabel("\(label) \(items[i])").accessibilityAddTraits(i == selected ? .isSelected : [])
@@ -1548,6 +1566,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         popover.behavior = .transient
         popover.animates = false
         popover.delegate = self
+        popover.appearance = NSAppearance(named: .darkAqua)   // the panel uses the window's dark ROG look
         popover.contentViewController = NSHostingController(rootView: ContentView(m: model, openWindow: { [weak self] page, adv in self?.open(page, advanced: adv) }))
         item.button?.target = self
         item.button?.action = #selector(toggle)
@@ -1684,11 +1703,8 @@ enum Snapshot {
         let out = URL(fileURLWithPath: dir); try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
         let m = mock(manual: manual, offline: offline)
         let tag = offline ? "-offline" : manual ? "-manual" : ""
-        for dark in [false, true] {
-            let t = (dark ? "dark" : "light") + tag
-            render(ContentView(m: m, openWindow: { _, _ in }).background(Color(nsColor: .windowBackgroundColor)), size: NSSize(width: 320, height: 0),
-                   dark: dark, to: out.appendingPathComponent("popover-\(t).png"))
-        }
+        render(ContentView(m: m, openWindow: { _, _ in }), size: NSSize(width: 320, height: 0), dark: true,
+               to: out.appendingPathComponent("popover\(tag).png"))
         // the window is always dark; each page at the default window size, full height
         let pages: [(String, RogPage, Bool)] = [("1-dashboard", .performance, false), ("2-advanced", .performance, true),
                                                 ("3-battery", .battery, false), ("4-lighting", .lighting, false), ("5-general", .general, false)]
