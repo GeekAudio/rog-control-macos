@@ -992,7 +992,7 @@ enum RogDialog: String, Identifiable {
         case .settings: return "Settings"
         }
     }
-    var width: CGFloat { self == .limits ? 820 : self == .settings ? 560 : 680 }
+    var width: CGFloat { self == .limits ? 820 : self == .slash ? 900 : self == .settings ? 560 : 680 }
 }
 
 struct TileHead: View {           // tile title, with an opener for its dialog on the right
@@ -1483,23 +1483,106 @@ struct FanCurves: View {
     }
 }
 
+// A drawn G14 lid with the Slash strip playing the chosen mode. The animations are approximations of the firmware's: the lid
+// itself plays the real one. Hovering a mode in the grid previews it here before it is applied.
+enum SlashAnim {
+    static let count = 7                        // slanted LED segments drawn along the strip
+    // brightness 0...1 of segment i at time t for mode, with `pause` seconds dark between runs
+    static func level(_ mode: Int, _ i: Int, _ t: Double, pause: Double) -> Double {
+        let n = Double(count), x = Double(i) / (n - 1), period = 2.4
+        let cycle = period + pause, local = t.truncatingRemainder(dividingBy: cycle)
+        if local > period { return mode == 0 ? 1 : 0 }        // Static never pauses
+        let p = local / period
+        func tri(_ v: Double) -> Double { v < 0.5 ? v * 2 : 2 - v * 2 }
+        func near(_ pos: Double, _ w: Double) -> Double { max(0, 1 - abs(Double(i) - pos) / w) }
+        let dim = 0.12
+        switch Slash.modes[min(mode, Slash.modes.count - 1)] {
+        case "Static": return 1
+        case "Bounce": return near(tri(p) * (n - 1), 1.3)
+        case "Slash": return near(p * (n + 2) - 1.5, 1.6)
+        case "Loading": return Double(i) < p * (n + 1) ? 1 : dim
+        case "Bit Stream":
+            var h = UInt64(i * 7919 + Int(t * 6) * 104729); h ^= h >> 13; h &*= 0x5bd1e995; h ^= h >> 15
+            return h % 3 == 0 ? 1 : dim
+        case "Transmission": return max(near((p * n * 2).truncatingRemainder(dividingBy: n + 1) - 0.5, 0.9), dim)
+        case "Flow": return 0.15 + 0.85 * (0.5 + 0.5 * sin(2 * .pi * (p * 2 - x)))
+        case "Flux": return (i + Int(p * 6)) % 2 == 0 ? 1 : 0.18
+        case "Phantom": return sin(.pi * p)
+        case "Spectrum": return 0.15 + 0.85 * (x + p).truncatingRemainder(dividingBy: 1)
+        case "Hazard": return Int(p * 6) % 2 == 0 ? 1 : 0
+        case "Interfacing": return abs(x - 0.5) * 2 >= 1 - tri(p) ? 1 : dim
+        case "Ramp": return x <= tri(p) ? 1 : dim
+        case "Game Over": return p < 0.5 ? (Int(p * 8) % 2 == 0 ? 1 : 0) : max(0, 1 - (p - 0.5) * 2)
+        case "Start": return abs(x - 0.5) * 2 <= p * 1.1 ? 1 : dim
+        case "Buzzer": return Int(p * 14) % 2 == 0 ? 1 : 0.1
+        default: return 1
+        }
+    }
+}
+
+struct LidPreview: View {
+    let mode: Int, bright: Int, interval: Int
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1 / 30, paused: reduceMotion || bright == 0)) { ctx in
+            let t = ctx.date.timeIntervalSinceReferenceDate
+            ZStack {
+                // the lid: dark aluminium, slightly lighter at the top, with the hinge along the bottom
+                RoundedRectangle(cornerRadius: 14)
+                    .fill(LinearGradient(colors: [Color(white: 0.20), Color(white: 0.13)], startPoint: .top, endPoint: .bottom))
+                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.10), lineWidth: 1))
+                VStack { Spacer(); Rectangle().fill(Color(white: 0.08)).frame(height: 10).padding(.horizontal, 40) }
+                strip(t)
+            }
+        }
+        .aspectRatio(1.55, contentMode: .fit)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Lid preview: Slash \(bright > 0 ? Slash.modes[min(mode, Slash.modes.count - 1)] : "off")")
+    }
+    func strip(_ t: Double) -> some View {
+        let gain = [0, 0.45, 0.75, 1.0][min(max(bright, 0), 3)]
+        return HStack(spacing: 5) {
+            ForEach(0..<SlashAnim.count, id: \.self) { i in
+                let v = bright == 0 ? 0 : SlashAnim.level(mode, i, reduceMotion ? 0.6 : t, pause: Double(interval) * 0.6) * gain
+                Slant()
+                    .fill(Color(white: 0.22 + 0.78 * v))
+                    .frame(width: 36, height: 10)
+                    .shadow(color: .white.opacity(0.9 * v), radius: 6 * v)
+            }
+        }
+        .rotationEffect(.degrees(-34))
+    }
+}
+
 struct SlashEditor: View {
     @ObservedObject var m: RogModel
+    @State private var hovered: Int?
     var slash: Slash { m.currentSlash }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 8) {
-                ForEach(Slash.modes.indices, id: \.self) { i in
-                    let on = slash.bright > 0 && slash.mode == i
-                    Button {
-                        var s = slash; s.mode = i; if s.bright == 0 { s.bright = 2 }; m.setSlash(s)
-                    } label: {
-                        Text(Slash.modes[i]).font(.system(size: 12, weight: on ? .semibold : .regular))
-                            .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).frame(height: 34)
-                    }
-                    .buttonStyle(RogButtonStyle(selected: on, cut: 8))
-                    .accessibilityAddTraits(on ? .isSelected : [])
+            HStack(alignment: .top, spacing: 20) {
+                VStack(alignment: .leading, spacing: 8) {
+                    LidPreview(mode: hovered ?? slash.mode, bright: hovered != nil ? max(slash.bright, 2) : slash.bright,
+                               interval: slash.interval)
+                        .frame(width: 340)
+                    Text(caption).font(.system(size: 11)).foregroundStyle(T.dim)
+                    Text("A drawing of the lid. The real Slash may look slightly different.").font(.system(size: 10.5)).foregroundStyle(T.faint)
                 }
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 8) {
+                    ForEach(Slash.modes.indices, id: \.self) { i in
+                        let on = slash.bright > 0 && slash.mode == i
+                        Button {
+                            var s = slash; s.mode = i; if s.bright == 0 { s.bright = 2 }; m.setSlash(s)
+                        } label: {
+                            Text(Slash.modes[i]).font(.system(size: 12, weight: on ? .semibold : .regular))
+                                .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).frame(height: 46)
+                        }
+                        .buttonStyle(RogButtonStyle(selected: on, cut: 8))
+                        .onHover { inside in if inside { hovered = i } else if hovered == i { hovered = nil } }
+                        .accessibilityAddTraits(on ? .isSelected : [])
+                    }
+                }
+                .frame(maxWidth: .infinity)
             }
             HStack {
                 Text("Pause between runs").font(.system(size: 12)).foregroundStyle(T.text); Spacer()
@@ -1512,6 +1595,10 @@ struct SlashEditor: View {
             Text("Fn+F4 turns Slash on and off.").font(.system(size: 11)).foregroundStyle(T.dim).padding(.top, 10)
             ErrorLine(text: m.lightingError).padding(.top, 6)
         }
+    }
+    var caption: String {
+        if let h = hovered { return "Preview: \(Slash.modes[h]). Click to use it." }
+        return slash.bright > 0 ? "On the lid now: \(Slash.modes[min(slash.mode, Slash.modes.count - 1)])" : "Slash is off"
     }
 }
 
@@ -1653,8 +1740,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         } else {
             popover.show(relativeTo: b.bounds, of: b, preferredEdge: .minY)
         }
+        // Activate so the panel gets keys and the outside click. Activation raises every window of the app (later, not inside
+        // this call), so a ROG window left behind other apps is taken off screen first and put back behind them when the panel
+        // closes: opening the panel must not bring the window up.
+        if !NSApp.isActive, let w = window, w.isVisible, !w.isMiniaturized {
+            w.orderOut(nil); windowHiddenForPopover = true
+        }
+        openingPopover = true
         NSApp.activate(ignoringOtherApps: true)   // a menu bar app is never active on its own, so .transient never sees the outside click
         popover.contentViewController?.view.window?.makeKey()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.openingPopover = false }
         watchOutsideClicks()
     }
     // Close on any click outside the panel: in other apps (global monitor), in this app's own window (local monitor), or when
@@ -1680,14 +1775,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     }
     func stopWatchingClicks() { clickMonitors.forEach(NSEvent.removeMonitor); clickMonitors = [] }
     func applicationDidResignActive(_ n: Notification) { if popover.isShown { popover.performClose(nil) } }
-    func popoverDidClose(_ n: Notification) { stopWatchingClicks(); anchor.orderOut(nil); updateVisibility() }
-    func updateVisibility() { model.visible = popover.isShown || window?.isVisible == true }
+    var windowHiddenForPopover = false
+    func popoverDidClose(_ n: Notification) {
+        stopWatchingClicks(); anchor.orderOut(nil)
+        if windowHiddenForPopover { windowHiddenForPopover = false; window?.orderBack(nil) }   // back where it was: behind the other apps
+        updateVisibility()
+    }
+    func updateVisibility() { model.visible = popover.isShown || window?.isVisible == true || windowHiddenForPopover }
     func windowWillClose(_ n: Notification) {
         model.visible = popover.isShown
         NSApp.setActivationPolicy(.accessory)
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+    var openingPopover = false
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if openingPopover || popover.isShown { return false }   // activation from the status item is not a request for the window
         showWindow(); return true
     }
     func open(_ dialog: RogDialog?) {
@@ -1695,6 +1797,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         showWindow()
     }
     @objc func showWindow() {
+        windowHiddenForPopover = false
         popover.performClose(nil)
         if window == nil {
             let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 600),

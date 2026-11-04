@@ -26,6 +26,8 @@ One screen, no side menu (like NitroSense). The top row is the live card (CPU an
 
 Anything set up once opens as a dialog over the dimmed screen: Custom limits (sliders in plain words with FPPT/SPPT/SPL codes as small labels, a picture of how the CPU uses them, Reset and Save to Custom), Fan curves (firmware CPU and GPU curves), Slash animations, Battery (presets, health, current) and Settings (open at login, about). The close button, Esc and a click on the dim area close a dialog. Without AsusWmi the header chip says so and the controls are off.
 
+The Slash dialog shows a drawn G14 lid with the seven Slash zones playing an approximation of the chosen mode (brightness and pause applied); hovering a mode previews it before it is applied. Opening the menu bar panel activates the app, which would raise a ROG window left behind other apps, so that window is taken off screen while the panel is open and put back behind the other apps afterwards.
+
 The header sits in the title bar next to the traffic lights and the window is exactly as tall as its content: no empty bands. The menu bar icon is the same chamfered mode badge as in the app, drawn as a template with the glyph cut out.
 
 Temperature and package power are smoothed (exponential average) and shown as whole degrees and watts that only move when the smoothed value is 1 °C or 2 W away. Live readings swap in place without the rolling-digit animation; only the gauge arc glides.
