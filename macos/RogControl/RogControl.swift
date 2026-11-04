@@ -1546,7 +1546,7 @@ struct LidPreview: View {
                 let v = bright == 0 ? 0 : SlashAnim.level(mode, i, reduceMotion ? 0.6 : t, pause: Double(interval) * 0.6) * gain
                 Slant()
                     .fill(Color(white: 0.22 + 0.78 * v))
-                    .frame(width: 26, height: 9)
+                    .frame(width: 36, height: 10)
                     .shadow(color: .white.opacity(0.9 * v), radius: 6 * v)
             }
         }
@@ -1740,8 +1740,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         } else {
             popover.show(relativeTo: b.bounds, of: b, preferredEdge: .minY)
         }
+        // Activate so the panel gets keys and the outside click. Activation also raises the app's other windows, so a ROG window
+        // left behind other apps goes back behind them: opening the panel must not bring the window up.
+        let wasActive = NSApp.isActive
+        let windowBehind = !wasActive && window?.isVisible == true
+        openingPopover = true
         NSApp.activate(ignoringOtherApps: true)   // a menu bar app is never active on its own, so .transient never sees the outside click
+        if windowBehind { window?.orderBack(nil) }
         popover.contentViewController?.view.window?.makeKey()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.openingPopover = false }
         watchOutsideClicks()
     }
     // Close on any click outside the panel: in other apps (global monitor), in this app's own window (local monitor), or when
@@ -1774,7 +1781,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         NSApp.setActivationPolicy(.accessory)
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+    var openingPopover = false
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if openingPopover || popover.isShown { return false }   // activation from the status item is not a request for the window
         showWindow(); return true
     }
     func open(_ dialog: RogDialog?) {
