@@ -1039,11 +1039,12 @@ struct RogWindowView: View {
                 .fixedSize(horizontal: false, vertical: true)
             }
             .disabled(!m.st.present)
-            Spacer(minLength: 0)
         }
-        .padding(.horizontal, 22).padding(.top, 34).padding(.bottom, 22)
-        .frame(minWidth: 1000, maxWidth: .infinity, minHeight: 660, maxHeight: .infinity, alignment: .topLeading)
-        .background(T.bg)
+        .padding(.horizontal, 18).padding(.bottom, 18)
+        .frame(width: 1120, alignment: .topLeading)
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(.top, -27)              // pull the header up into the 28 pt title bar, level with the traffic lights
+        .background(T.bg.ignoresSafeArea())
         .overlay {
             if let d = m.dialog {
                 DialogShell(kind: d, m: m) { m.dialog = nil }
@@ -1056,7 +1057,7 @@ struct RogWindowView: View {
     }
 
     var header: some View {
-        HStack(alignment: .center, spacing: 10) {
+        HStack(alignment: .center, spacing: 10) {     // sits in the title bar, centred on the traffic lights
             HStack(alignment: .lastTextBaseline, spacing: 10) {
                 Text("ROG CONTROL").font(T.num(16, .bold)).foregroundStyle(T.text)
                 Caps("Zephyrus G14 · GA403WM")
@@ -1070,6 +1071,7 @@ struct RogWindowView: View {
             }
             .buttonStyle(RogButtonStyle(cut: 6)).help("Settings").accessibilityLabel("Settings")
         }
+        .frame(height: 28)
     }
     func chip(dot: Color? = nil, icon: String? = nil, _ text: String) -> some View {
         HStack(spacing: 6) {
@@ -1232,13 +1234,13 @@ struct BatteryTile: View {
             }
             .padding(.top, 8)
             Segments(lit: (m.batteryLevel ?? 0) * 20 / 100, total: 20, height: 10).padding(.top, 4)
+            Spacer(minLength: 14)
             HStack {
                 Text("Charge limit").font(.system(size: 12)).foregroundStyle(T.text); Spacer()
                 Pills(items: presets.map { "\($0)%" }, selected: m.st.charge.flatMap { presets.firstIndex(of: $0) }, minWidth: 30, pad: 7,
                       label: "Charge limit") { m.setCharge(presets[$0]) }
                     .disabled(m.st.charge == nil)
             }
-            .padding(.top, 14)
             ErrorLine(text: m.chargeError).padding(.top, 6)
         }
     }
@@ -1255,9 +1257,10 @@ struct LimitsTile: View {
                 bar("Boost", m.settings.sppt, top, 0.65)
                 bar("Sustained", m.settings.spl, top, 0.40)
             }
-            .frame(height: 92).padding(.top, 8)
+            .frame(height: 64).padding(.top, 8)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Custom limits: burst \(m.settings.fppt), short boost \(m.settings.sppt), sustained \(m.settings.spl) watts")
+            Spacer(minLength: 12)
             HStack {
                 Text("Fans follow").font(.system(size: 12)).foregroundStyle(T.text); Spacer()
                 Button { m.dialog = .fans } label: {
@@ -1269,13 +1272,12 @@ struct LimitsTile: View {
                 }
                 .buttonStyle(RogButtonStyle(cut: 6)).help("Show the fan curves")
             }
-            .padding(.top, 12)
         }
     }
     func bar(_ name: String, _ w: Int, _ top: Double, _ a: Double) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("\(w) W").font(T.num(11)).foregroundStyle(T.text)
-            Rectangle().fill(T.red.opacity(a)).frame(height: max(3, CGFloat(Double(w) / top) * 50))
+            Rectangle().fill(T.red.opacity(a)).frame(height: max(3, CGFloat(Double(w) / top) * 26))
             Text(name).font(.system(size: 10)).foregroundStyle(T.dim)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1301,6 +1303,7 @@ struct LightingTile: View {
                     Toggle("Slash", isOn: slashOn(m)).toggleStyle(.switch).labelsHidden().tint(T.red).help("Fn+F4 turns it on and off")
                 }
                 .padding(.top, 8)
+                Spacer(minLength: 10)
                 HStack {
                     Text("Brightness").font(.system(size: 12)).foregroundStyle(T.text); Spacer()
                     Pills(items: ["Low", "Med", "High"], selected: max(1, slash.bright) - 1, minWidth: 30, pad: 7, label: "Slash brightness") {
@@ -1308,7 +1311,6 @@ struct LightingTile: View {
                     }
                     .disabled(slash.bright == 0).opacity(slash.bright == 0 ? 0.5 : 1)
                 }
-                .padding(.top, 10)
                 HStack {
                     Text("Keyboard").font(.system(size: 12)).foregroundStyle(T.text); Spacer()
                     Pills(items: ["Off", "Low", "Med", "High"], selected: m.st.kbd, minWidth: 28, pad: 6, label: "Keyboard") { m.setKbd($0) }
@@ -1340,7 +1342,7 @@ struct DialogShell: View {
     let close: () -> Void
     var body: some View {
         ZStack {
-            Color.black.opacity(0.6).contentShape(Rectangle()).onTapGesture(perform: close)
+            Color.black.opacity(0.6).contentShape(Rectangle()).onTapGesture(perform: close).ignoresSafeArea()
             VStack(alignment: .leading, spacing: 0) {
                 HStack {
                     Text(kind.title).font(T.num(16)).foregroundStyle(T.text)
@@ -1697,17 +1699,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     @objc func showWindow() {
         popover.performClose(nil)
         if window == nil {
-            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 680),
-                             styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 600),
+                             styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
             w.title = "ROG Control"
             w.styleMask.insert(.fullSizeContentView)
             w.titlebarAppearsTransparent = true
             w.titleVisibility = .hidden
             w.isReleasedWhenClosed = false
-            w.minSize = NSSize(width: 1000, height: 660)
             w.appearance = NSAppearance(named: .darkAqua)   // the window is the ROG side: always dark
             w.backgroundColor = T.nsBG
-            w.contentViewController = NSHostingController(rootView: RogWindowView(m: model))
+            let host = NSHostingController(rootView: RogWindowView(m: model))
+            host.sizingOptions = .preferredContentSize      // the window is exactly as tall as the content
+            w.contentViewController = host
             w.delegate = self
             w.center()
             w.setFrameAutosaveName("RogControl.MainWindow")
@@ -1746,12 +1749,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         NSApp.windowsMenu = windowMenu
     }
 
+    // The menu bar icon is the app's ModeBadge as a template: a plate with the top-right corner cut, the mode glyph cut out of it
+    static func badgeImage(_ mode: Mode) -> NSImage {
+        let img = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { r in
+            let plate = r.insetBy(dx: 1, dy: 1), cut = plate.width * 0.25
+            let path = NSBezierPath()
+            path.move(to: NSPoint(x: plate.minX, y: plate.maxY)); path.line(to: NSPoint(x: plate.maxX - cut, y: plate.maxY))
+            path.line(to: NSPoint(x: plate.maxX, y: plate.maxY - cut)); path.line(to: NSPoint(x: plate.maxX, y: plate.minY))
+            path.line(to: NSPoint(x: plate.minX, y: plate.minY)); path.close()
+            NSColor.black.setFill(); path.fill()
+            if let glyph = NSImage(systemSymbolName: mode.symbol, accessibilityDescription: nil)?
+                .withSymbolConfiguration(.init(pointSize: 9.5, weight: .bold)) {
+                let g = glyph.size
+                glyph.draw(in: NSRect(x: (r.width - g.width) / 2, y: (r.height - g.height) / 2, width: g.width, height: g.height),
+                           from: .zero, operation: .destinationOut, fraction: 1)
+            }
+            return true
+        }
+        img.isTemplate = true
+        return img
+    }
+
     func updateIcon() {
         guard let b = item.button else { return }
         let mode = model.activeMode ?? .performance
-        let img = NSImage(systemSymbolName: mode.symbol, accessibilityDescription: "ROG: \(mode.title)")
-        img?.isTemplate = true
-        b.image = img
+        b.image = Self.badgeImage(mode)
+        b.image?.accessibilityDescription = "ROG: \(mode.title)"
         var tip = "ROG: \(model.modeLabel)"
         if let t = model.tctl { tip += String(format: " · CPU %.0f°C", t) }
         if let w = model.watts { tip += String(format: " · %.1f W", w) }
@@ -1805,8 +1828,19 @@ enum Snapshot {
                                              ("5-battery", .battery), ("6-settings", .settings)]
         for (name, d) in shots {
             m.dialog = d
-            render(RogWindowView(m: m).frame(width: 1120, height: 680), size: NSSize(width: 1120, height: 680), dark: true,
+            render(RogWindowView(m: m), size: NSSize(width: 1120, height: 0), dark: true,
                    to: out.appendingPathComponent("window-\(name)\(tag).png"))
+        }
+        for mode in Mode.allCases {         // menu bar icons, drawn at 4x for review
+            let img = AppDelegate.badgeImage(mode)
+            let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 72, pixelsHigh: 72, bitsPerSample: 8, samplesPerPixel: 4,
+                                       hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+            rep.size = NSSize(width: 18, height: 18)
+            NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+            NSColor.white.setFill(); NSRect(x: 0, y: 0, width: 18, height: 18).fill()
+            img.draw(in: NSRect(x: 0, y: 0, width: 18, height: 18))
+            NSGraphicsContext.restoreGraphicsState()
+            try? rep.representation(using: .png, properties: [:])?.write(to: out.appendingPathComponent("menubar-\(mode.rawValue).png"))
         }
         print("snapshots in \(out.path)")
     }

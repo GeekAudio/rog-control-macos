@@ -26,6 +26,8 @@ One screen, no side menu (like NitroSense). The top row is the live card (CPU an
 
 Anything set up once opens as a dialog over the dimmed screen: Custom limits (sliders in plain words with FPPT/SPPT/SPL codes as small labels, a picture of how the CPU uses them, Reset and Save to Custom), Fan curves (firmware CPU and GPU curves), Slash animations, Battery (presets, health, current) and Settings (open at login, about). The close button, Esc and a click on the dim area close a dialog. Without AsusWmi the header chip says so and the controls are off.
 
+The header sits in the title bar next to the traffic lights and the window is exactly as tall as its content: no empty bands. The menu bar icon is the same chamfered mode badge as in the app, drawn as a template with the glyph cut out.
+
 Temperature and package power are smoothed (exponential average) and the shown value only moves on a change of at least 0.75 °C or 1 W, so the numbers and gauges do not roll on every 2 s read.
 
 Motion is brief: numbers roll on macOS 14+, gauges and segments ease, mode selection animates; Reduce Motion turns the panel's motion off. Nothing spins.
