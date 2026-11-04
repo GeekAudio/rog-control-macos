@@ -1740,13 +1740,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         } else {
             popover.show(relativeTo: b.bounds, of: b, preferredEdge: .minY)
         }
-        // Activate so the panel gets keys and the outside click. Activation also raises the app's other windows, so a ROG window
-        // left behind other apps goes back behind them: opening the panel must not bring the window up.
-        let wasActive = NSApp.isActive
-        let windowBehind = !wasActive && window?.isVisible == true
+        // Activate so the panel gets keys and the outside click. Activation raises every window of the app (later, not inside
+        // this call), so a ROG window left behind other apps is taken off screen first and put back behind them when the panel
+        // closes: opening the panel must not bring the window up.
+        if !NSApp.isActive, let w = window, w.isVisible, !w.isMiniaturized {
+            w.orderOut(nil); windowHiddenForPopover = true
+        }
         openingPopover = true
         NSApp.activate(ignoringOtherApps: true)   // a menu bar app is never active on its own, so .transient never sees the outside click
-        if windowBehind { window?.orderBack(nil) }
         popover.contentViewController?.view.window?.makeKey()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.openingPopover = false }
         watchOutsideClicks()
@@ -1774,8 +1775,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     }
     func stopWatchingClicks() { clickMonitors.forEach(NSEvent.removeMonitor); clickMonitors = [] }
     func applicationDidResignActive(_ n: Notification) { if popover.isShown { popover.performClose(nil) } }
-    func popoverDidClose(_ n: Notification) { stopWatchingClicks(); anchor.orderOut(nil); updateVisibility() }
-    func updateVisibility() { model.visible = popover.isShown || window?.isVisible == true }
+    var windowHiddenForPopover = false
+    func popoverDidClose(_ n: Notification) {
+        stopWatchingClicks(); anchor.orderOut(nil)
+        if windowHiddenForPopover { windowHiddenForPopover = false; window?.orderBack(nil) }   // back where it was: behind the other apps
+        updateVisibility()
+    }
+    func updateVisibility() { model.visible = popover.isShown || window?.isVisible == true || windowHiddenForPopover }
     func windowWillClose(_ n: Notification) {
         model.visible = popover.isShown
         NSApp.setActivationPolicy(.accessory)
@@ -1791,6 +1797,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         showWindow()
     }
     @objc func showWindow() {
+        windowHiddenForPopover = false
         popover.performClose(nil)
         if window == nil {
             let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 600),

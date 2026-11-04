@@ -45,7 +45,7 @@ are untested; the power-limit ranges are the GA403WM's. Per-feature detail and t
 <p align="center"><em>Custom limits dialog (burst, short boost, sustained in plain words) and the firmware fan curves</em></p>
 
 <p align="center"><img src="docs/images/rogcontrol-battery.png" alt="Battery dialog" width="430">&nbsp;&nbsp;<img src="docs/images/rogcontrol-lighting.png" alt="Slash animations dialog" width="430"></p>
-<p align="center"><em>Battery dialog (charge limit presets, health) and Slash animations</em></p>
+<p align="center"><em>Battery dialog (charge limit presets, health) and Slash animations with a G14 lid preview</em></p>
 
 <p align="center"><img src="docs/images/rogcontrol-general.png" alt="Settings dialog" width="430">&nbsp;&nbsp;<img src="docs/images/rogcontrol-offline.png" alt="RogControl window without AsusWmi loaded" width="430"></p>
 <p align="center"><em>Settings, and the window when AsusWmi is not loaded</em></p>
@@ -60,7 +60,7 @@ are untested; the power-limit ranges are the GA403WM's. Per-feature detail and t
 
 | Release | Contents |
 |---|---|
-| [rogcontrol-v0.3.2](https://github.com/thanhnndev/rog-control-macos/releases/tag/rogcontrol-v0.3.2) | `RogControl-0.3.2.dmg`: one-screen window with dialogs, no spare space, menu bar icon in the app badge style, steadier temperature and power readings; open it and drag the app into Applications. Kexts unchanged, still in `rog-v1.0` |
+| [rogcontrol-v0.3.3](https://github.com/thanhnndev/rog-control-macos/releases/tag/rogcontrol-v0.3.3) | `RogControl-0.3.3.dmg`: one-screen window with dialogs, no spare space, menu bar icon in the app badge style, steadier temperature and power readings; open it and drag the app into Applications. Kexts unchanged, still in `rog-v1.0` |
 | [rog-v1.0](https://github.com/thanhnndev/rog-control-macos/releases/tag/rog-v1.0) | `AsusWmi.kext`, `AmdCppc.kext`, `AmdCppcPolicy`, `RogControl.app`, `SHA256SUMS.txt`. Binaries copied unchanged from `kext-v1.1` of the EFI repo; same checksums |
 
 ## Build

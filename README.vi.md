@@ -44,7 +44,7 @@ giới hạn công suất là của GA403WM. Chi tiết từng tính năng và v
 <p align="center"><em>Dialog giới hạn Custom (burst, short boost, sustained bằng lời dễ hiểu) và đường cong quạt của firmware</em></p>
 
 <p align="center"><img src="docs/images/rogcontrol-battery.png" alt="Battery dialog" width="430">&nbsp;&nbsp;<img src="docs/images/rogcontrol-lighting.png" alt="Slash animations dialog" width="430"></p>
-<p align="center"><em>Dialog pin (mức giới hạn sạc, độ chai) và hiệu ứng Slash</em></p>
+<p align="center"><em>Dialog pin (mức giới hạn sạc, độ chai) và hiệu ứng Slash với mô phỏng mặt lưng G14</em></p>
 
 <p align="center"><img src="docs/images/rogcontrol-general.png" alt="Settings dialog" width="430">&nbsp;&nbsp;<img src="docs/images/rogcontrol-offline.png" alt="RogControl window without AsusWmi loaded" width="430"></p>
 <p align="center"><em>Settings, và cửa sổ khi AsusWmi chưa được nạp</em></p>
@@ -59,7 +59,7 @@ giới hạn công suất là của GA403WM. Chi tiết từng tính năng và v
 
 | Release | Nội dung |
 |---|---|
-| [rogcontrol-v0.3.2](https://github.com/thanhnndev/rog-control-macos/releases/tag/rogcontrol-v0.3.2) | `RogControl-0.3.2.dmg`: cửa sổ một màn hình với dialog, gọn không thừa khoảng trống, icon thanh menu theo kiểu badge của app, số nhiệt độ và công suất ổn định hơn; mở DMG rồi kéo vào Applications. Kext giữ nguyên ở `rog-v1.0` |
+| [rogcontrol-v0.3.3](https://github.com/thanhnndev/rog-control-macos/releases/tag/rogcontrol-v0.3.3) | `RogControl-0.3.3.dmg`: cửa sổ một màn hình với dialog, gọn không thừa khoảng trống, icon thanh menu theo kiểu badge của app, số nhiệt độ và công suất ổn định hơn; mở DMG rồi kéo vào Applications. Kext giữ nguyên ở `rog-v1.0` |
 | [rog-v1.0](https://github.com/thanhnndev/rog-control-macos/releases/tag/rog-v1.0) | `AsusWmi.kext`, `AmdCppc.kext`, `AmdCppcPolicy`, `RogControl.app`, `SHA256SUMS.txt`. Binary chép nguyên từ `kext-v1.1` của repo EFI; cùng checksum |
 
 ## Build
