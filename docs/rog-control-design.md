@@ -28,7 +28,7 @@ Anything set up once opens as a dialog over the dimmed screen: Custom limits (sl
 
 The header sits in the title bar next to the traffic lights and the window is exactly as tall as its content: no empty bands. The menu bar icon is the same chamfered mode badge as in the app, drawn as a template with the glyph cut out.
 
-Temperature and package power are smoothed (exponential average) and the shown value only moves on a change of at least 0.75 °C or 1 W, so the numbers and gauges do not roll on every 2 s read.
+Temperature and package power are smoothed (exponential average) and shown as whole degrees and watts that only move when the smoothed value is 1 °C or 2 W away. Live readings swap in place without the rolling-digit animation; only the gauge arc glides.
 
 Motion is brief: numbers roll on macOS 14+, gauges and segments ease, mode selection animates; Reduce Motion turns the panel's motion off. Nothing spins.
 

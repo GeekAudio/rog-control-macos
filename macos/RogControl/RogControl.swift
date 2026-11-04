@@ -311,17 +311,18 @@ final class RogModel: ObservableObject {
     }
     static func hold(_ shown: Double?, _ new: Double?, step: Double) -> Double? {
         guard let n = new else { return nil }
-        guard let o = shown, abs(n - o) < step else { return n }
+        guard let o = shown, abs(n - o) < step else { return n.rounded() }
         return o
     }
     func refresh() {
         let previousMode = activeMode
         st = Asus.state()
         let s = Sensors.read()
-        // The raw readings jitter by a degree and several watts between reads. Smooth them, then only move the shown value on a
-        // real change, so the numbers and gauges do not roll on every refresh.
-        tSmooth = Self.ema(tSmooth, s.tctl, 0.35); wSmooth = Self.ema(wSmooth, s.watts, 0.3)
-        let newT = Self.hold(tctl, tSmooth, step: 0.75), newW = Self.hold(watts, wSmooth, step: 1.0)
+        // The raw readings drift by fractions of a degree and jump by several watts between reads. Smooth them, then show whole
+        // degrees and watts that only move when the smoothed value is a full step (1 °C, 2 W) away, so the numbers and gauges
+        // stay still unless the temperature or power really changed.
+        tSmooth = Self.ema(tSmooth, s.tctl, 0.25); wSmooth = Self.ema(wSmooth, s.watts, 0.2)
+        let newT = Self.hold(tctl, tSmooth, step: 1.0), newW = Self.hold(watts, wSmooth, step: 2.0)
         if newT != tctl { tctl = newT }
         if newW != watts { watts = newW }
         if let t = tSmooth {
@@ -581,8 +582,6 @@ struct ContentView: View {
                 HStack(alignment: .firstTextBaseline, spacing: 2) {
                     Text(m.tctl.map { String(format: "%.0f", $0) } ?? "–").font(T.num(40)).monospacedDigit()
                         .foregroundStyle((m.tctl ?? 0) >= 90 ? T.red : T.text)
-                        .rollingNumber(m.tctl ?? 0)
-                        .animation(reduceMotion ? nil : .easeOut(duration: 0.3), value: m.tctl)
                     Text("°C").font(T.num(14, .medium)).foregroundStyle(T.dim)
                 }
                 Caps((m.tctl ?? 0) >= 90 ? "CPU · hot" : "CPU")
@@ -591,7 +590,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 7) {
                 HStack(alignment: .firstTextBaseline, spacing: 3) {
                     Caps("Power"); Spacer()
-                    Text(m.watts.map { String(format: "%.1f", $0) } ?? "–").font(T.num(12)).monospacedDigit().foregroundStyle(T.text)
+                    Text(m.watts.map { String(format: "%.0f", $0) } ?? "–").font(T.num(12)).monospacedDigit().foregroundStyle(T.text)
                     Text("W").font(.system(size: 9.5)).foregroundStyle(T.dim)
                 }
                 fan("CPU fan", m.st.cpuFan)
@@ -744,15 +743,14 @@ struct Gauge: View {
                 .rotationEffect(.degrees(135))
             Circle().trim(from: 0, to: 0.75 * min(1, max(0, value / maximum))).stroke(T.red, style: StrokeStyle(lineWidth: size * 0.045))
                 .rotationEffect(.degrees(135))
-                .animation(.easeOut(duration: 0.6), value: value)
+                .animation(.easeInOut(duration: 0.8), value: value)
             ForEach(0..<16, id: \.self) { i in
                 Rectangle().fill(Color.white.opacity(i % 5 == 0 ? 0.30 : 0.12)).frame(width: 1, height: i % 5 == 0 ? 7 : 4)
                     .offset(y: -size / 2 + size * 0.09).rotationEffect(.degrees(-135 + Double(i) * 18))
             }
             VStack(spacing: 2) {
                 HStack(alignment: .firstTextBaseline, spacing: 2) {
-                    Text(text).font(T.num(size * 0.24)).monospacedDigit().foregroundStyle(T.text).rollingNumber(value)
-                        .animation(.easeOut(duration: 0.3), value: value)
+                    Text(text).font(T.num(size * 0.24)).monospacedDigit().foregroundStyle(T.text)
                     Text(unit).font(T.num(size * 0.09, .medium)).foregroundStyle(T.dim)
                 }
                 Caps(caption)
@@ -1777,7 +1775,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         b.image?.accessibilityDescription = "ROG: \(mode.title)"
         var tip = "ROG: \(model.modeLabel)"
         if let t = model.tctl { tip += String(format: " · CPU %.0f°C", t) }
-        if let w = model.watts { tip += String(format: " · %.1f W", w) }
+        if let w = model.watts { tip += String(format: " · %.0f W", w) }
         b.toolTip = tip
     }
 }

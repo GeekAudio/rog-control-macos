@@ -59,7 +59,7 @@ giới hạn công suất là của GA403WM. Chi tiết từng tính năng và v
 
 | Release | Nội dung |
 |---|---|
-| [rogcontrol-v0.3.1](https://github.com/thanhnndev/rog-control-macos/releases/tag/rogcontrol-v0.3.1) | `RogControl-0.3.1.dmg`: cửa sổ một màn hình với dialog, gọn không thừa khoảng trống, icon thanh menu theo kiểu badge của app, số nhiệt độ và công suất ổn định hơn; mở DMG rồi kéo vào Applications. Kext giữ nguyên ở `rog-v1.0` |
+| [rogcontrol-v0.3.2](https://github.com/thanhnndev/rog-control-macos/releases/tag/rogcontrol-v0.3.2) | `RogControl-0.3.2.dmg`: cửa sổ một màn hình với dialog, gọn không thừa khoảng trống, icon thanh menu theo kiểu badge của app, số nhiệt độ và công suất ổn định hơn; mở DMG rồi kéo vào Applications. Kext giữ nguyên ở `rog-v1.0` |
 | [rog-v1.0](https://github.com/thanhnndev/rog-control-macos/releases/tag/rog-v1.0) | `AsusWmi.kext`, `AmdCppc.kext`, `AmdCppcPolicy`, `RogControl.app`, `SHA256SUMS.txt`. Binary chép nguyên từ `kext-v1.1` của repo EFI; cùng checksum |
 
 ## Build
