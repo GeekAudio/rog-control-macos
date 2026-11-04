@@ -60,7 +60,7 @@ are untested; the power-limit ranges are the GA403WM's. Per-feature detail and t
 
 | Release | Contents |
 |---|---|
-| [rogcontrol-v0.3.1](https://github.com/thanhnndev/rog-control-macos/releases/tag/rogcontrol-v0.3.1) | `RogControl-0.3.1.dmg`: one-screen window with dialogs, no spare space, menu bar icon in the app badge style, steadier temperature and power readings; open it and drag the app into Applications. Kexts unchanged, still in `rog-v1.0` |
+| [rogcontrol-v0.3.2](https://github.com/thanhnndev/rog-control-macos/releases/tag/rogcontrol-v0.3.2) | `RogControl-0.3.2.dmg`: one-screen window with dialogs, no spare space, menu bar icon in the app badge style, steadier temperature and power readings; open it and drag the app into Applications. Kexts unchanged, still in `rog-v1.0` |
 | [rog-v1.0](https://github.com/thanhnndev/rog-control-macos/releases/tag/rog-v1.0) | `AsusWmi.kext`, `AmdCppc.kext`, `AmdCppcPolicy`, `RogControl.app`, `SHA256SUMS.txt`. Binaries copied unchanged from `kext-v1.1` of the EFI repo; same checksums |
 
 ## Build
