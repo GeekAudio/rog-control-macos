@@ -34,17 +34,20 @@ giới hạn công suất là của GA403WM. Chi tiết từng tính năng và v
 
 ## Ảnh chụp
 
-<p align="center"><img src="docs/images/rogcontrol-popover.png" alt="RogControl menu bar panel" width="320">&nbsp;&nbsp;<img src="docs/images/rogcontrol-window.png" alt="RogControl window, Performance" width="560"></p>
-<p align="center"><em>Panel trên thanh menu và trang Performance</em></p>
+<p align="center"><img src="docs/images/rogcontrol-window.png" alt="RogControl window: live readings, mode, battery, custom limits and lighting on one screen" width="860"></p>
+<p align="center"><em>Một màn hình: số đo trực tiếp và chế độ ở trên, pin, giới hạn Custom và đèn ở dưới. Phần cài đặt mở bằng dialog.</em></p>
 
-<p align="center"><img src="docs/images/fan-curves.png" alt="RogControl window, Performance › Advanced: custom limits and firmware fan curve" width="720"></p>
-<p align="center"><em>Performance › Advanced: giới hạn công suất Custom bằng lời dễ hiểu và đường cong quạt của firmware</em></p>
+<p align="center"><img src="docs/images/rogcontrol-popover.png" alt="RogControl menu bar panel" width="320"></p>
+<p align="center"><em>Panel trên thanh menu</em></p>
 
-<p align="center"><img src="docs/images/rogcontrol-battery.png" alt="RogControl window, Battery" width="440">&nbsp;&nbsp;<img src="docs/images/rogcontrol-lighting.png" alt="RogControl window, Lighting" width="440"></p>
-<p align="center"><em>Battery (mức giới hạn sạc, độ chai) và Lighting (Slash, bàn phím)</em></p>
+<p align="center"><img src="docs/images/rogcontrol-limits.png" alt="Custom limits dialog" width="430">&nbsp;&nbsp;<img src="docs/images/fan-curves.png" alt="Fan curves dialog" width="430"></p>
+<p align="center"><em>Dialog giới hạn Custom (burst, short boost, sustained bằng lời dễ hiểu) và đường cong quạt của firmware</em></p>
 
-<p align="center"><img src="docs/images/rogcontrol-general.png" alt="RogControl window, General" width="440">&nbsp;&nbsp;<img src="docs/images/rogcontrol-offline.png" alt="RogControl window without AsusWmi loaded" width="440"></p>
-<p align="center"><em>General, và cửa sổ khi AsusWmi chưa được nạp</em></p>
+<p align="center"><img src="docs/images/rogcontrol-battery.png" alt="Battery dialog" width="430">&nbsp;&nbsp;<img src="docs/images/rogcontrol-lighting.png" alt="Slash animations dialog" width="430"></p>
+<p align="center"><em>Dialog pin (mức giới hạn sạc, độ chai) và hiệu ứng Slash</em></p>
+
+<p align="center"><img src="docs/images/rogcontrol-general.png" alt="Settings dialog" width="430">&nbsp;&nbsp;<img src="docs/images/rogcontrol-offline.png" alt="RogControl window without AsusWmi loaded" width="430"></p>
+<p align="center"><em>Settings, và cửa sổ khi AsusWmi chưa được nạp</em></p>
 
 <p align="center"><img src="docs/images/rogcontrol-popover-offline.png" alt="RogControl menu bar panel without AsusWmi loaded" width="320"></p>
 <p align="center"><em>Panel khi AsusWmi chưa được nạp: tắt điều khiển, không hiện số đoán</em></p>
@@ -56,7 +59,7 @@ giới hạn công suất là của GA403WM. Chi tiết từng tính năng và v
 
 | Release | Nội dung |
 |---|---|
-| [rogcontrol-v0.2.1](https://github.com/thanhnndev/rog-control-macos/releases/tag/rogcontrol-v0.2.1) | `RogControl-0.2.1.dmg`: app ROG mới (giao diện ROG, icon), mở DMG rồi kéo vào Applications. Kext giữ nguyên ở `rog-v1.0` |
+| [rogcontrol-v0.3.0](https://github.com/thanhnndev/rog-control-macos/releases/tag/rogcontrol-v0.3.0) | `RogControl-0.3.0.dmg`: cửa sổ một màn hình với dialog, số nhiệt độ và công suất ổn định hơn; mở DMG rồi kéo vào Applications. Kext giữ nguyên ở `rog-v1.0` |
 | [rog-v1.0](https://github.com/thanhnndev/rog-control-macos/releases/tag/rog-v1.0) | `AsusWmi.kext`, `AmdCppc.kext`, `AmdCppcPolicy`, `RogControl.app`, `SHA256SUMS.txt`. Binary chép nguyên từ `kext-v1.1` của repo EFI; cùng checksum |
 
 ## Build

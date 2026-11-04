@@ -245,8 +245,7 @@ final class RogModel: ObservableObject {
     }
     var onChange: (() -> Void)?
     // window navigation, so the popover can open a given page
-    @Published var page: RogPage = .performance
-    @Published var advanced = false
+    @Published var dialog: RogDialog? = nil     // the window's open dialog, if any
     // what ROG Control did on its own (power source change); shown for a few minutes
     @Published var autoNote = ""
     var autoNoteAt: Date?
@@ -304,14 +303,30 @@ final class RogModel: ObservableObject {
         }
     }
 
+    private var tSmooth: Double?, wSmooth: Double?
+    static func ema(_ old: Double?, _ new: Double?, _ alpha: Double) -> Double? {
+        guard let n = new else { return nil }
+        guard let o = old else { return n }
+        return o + alpha * (n - o)
+    }
+    static func hold(_ shown: Double?, _ new: Double?, step: Double) -> Double? {
+        guard let n = new else { return nil }
+        guard let o = shown, abs(n - o) < step else { return n }
+        return o
+    }
     func refresh() {
         let previousMode = activeMode
         st = Asus.state()
         let s = Sensors.read()
-        tctl = s.tctl; watts = s.watts
-        if let t = s.tctl {
+        // The raw readings jitter by a degree and several watts between reads. Smooth them, then only move the shown value on a
+        // real change, so the numbers and gauges do not roll on every refresh.
+        tSmooth = Self.ema(tSmooth, s.tctl, 0.35); wSmooth = Self.ema(wSmooth, s.watts, 0.3)
+        let newT = Self.hold(tctl, tSmooth, step: 0.75), newW = Self.hold(watts, wSmooth, step: 1.0)
+        if newT != tctl { tctl = newT }
+        if newW != watts { watts = newW }
+        if let t = tSmooth {
             sampleID += 1
-            history.append(Sample(id: sampleID, date: Date(), temp: t, watts: s.watts))
+            history.append(Sample(id: sampleID, date: Date(), temp: t, watts: wSmooth))
             if history.count > 180 { history.removeFirst(history.count - 180) }   // 6 min at the 2 s visible rate
         }
         if st.present, lastAC != nil, lastAC != st.ac { powerChanged() }
@@ -426,19 +441,6 @@ final class RogModel: ObservableObject {
 // cards and the Slash bar's slanted segments as its graphic language; it holds setup (power sources, Custom limits, fan curves,
 // battery, lighting).
 
-enum RogPage: String, CaseIterable, Identifiable {
-    case performance = "Performance", battery = "Battery", lighting = "Lighting", general = "General"
-    var id: String { rawValue }
-    var symbol: String {
-        switch self {
-        case .performance: return "gauge.with.dots.needle.67percent"
-        case .battery: return "battery.75percent"
-        case .lighting: return "keyboard"
-        case .general: return "gearshape"
-        }
-    }
-}
-
 extension Mode {
     var short: String {
         switch self {
@@ -532,7 +534,7 @@ struct PopoverTile: View {
 
 struct ContentView: View {
     @ObservedObject var m: RogModel
-    let openWindow: (RogPage, Bool) -> Void
+    let openWindow: (RogDialog?) -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -625,7 +627,7 @@ struct ContentView: View {
                     let unavailable = mode == .turbo && !m.st.ac
                     let sub = unavailable ? "Needs charger" : (mode == .manual && !m.customReady) ? "Set up…" : mode.short
                     PopoverTile(mode: mode, selected: m.activeMode == mode, unavailable: unavailable, subtitle: sub) {
-                        if mode == .manual && !m.customReady { openWindow(.performance, true) } else { m.choose(mode) }
+                        if mode == .manual && !m.customReady { openWindow(.limits) } else { m.choose(mode) }
                     }
                 }
             }
@@ -643,7 +645,7 @@ struct ContentView: View {
 
     var footer: some View {
         HStack {
-            Button { openWindow(m.page, false) } label: {
+            Button { openWindow(nil) } label: {
                 HStack(spacing: 6) {
                     Text("Open ROG Control").font(.system(size: 11.5, weight: .medium))
                     Image(systemName: "arrow.up.right").font(.system(size: 9, weight: .bold)).foregroundStyle(T.dim)
@@ -948,9 +950,10 @@ struct CurveChart: View {
 
 struct LiveChart: View {
     let samples: [RogModel.Sample]
+    var height: CGFloat = 96
     var body: some View {
         if samples.count < 2 {
-            Text("Collecting readings…").font(.system(size: 11)).foregroundStyle(T.dim).frame(maxWidth: .infinity, minHeight: 96)
+            Text("Collecting readings…").font(.system(size: 11)).foregroundStyle(T.dim).frame(maxWidth: .infinity, minHeight: height)
         } else {
             Chart {
                 ForEach(samples) { s in
@@ -970,116 +973,126 @@ struct LiveChart: View {
             .chartYAxis { AxisMarks(position: .trailing, values: [40, 70, 100]) { v in
                 AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5)).foregroundStyle(Color.white.opacity(0.06))
                 AxisValueLabel { if let n = v.as(Int.self) { Text("\(n)°").font(.system(size: 10)).foregroundStyle(T.faint) } } } }
-            .frame(height: 96)
+            .frame(height: height)
             .accessibilityLabel("CPU temperature and package power, last minutes")
+        }
+    }
+}
+
+// One screen, NitroSense style: live readings and the mode on top, three tiles below with their everyday control inline.
+// Anything that is set up once (Custom limits, fan curves, Slash animations, battery details, settings) opens as a dialog over
+// the screen instead of a page behind a side menu.
+enum RogDialog: String, Identifiable {
+    case limits, fans, slash, battery, settings
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .limits: return "Custom limits"
+        case .fans: return "Fan curves"
+        case .slash: return "Slash animations"
+        case .battery: return "Battery"
+        case .settings: return "Settings"
+        }
+    }
+    var width: CGFloat { self == .limits ? 820 : self == .settings ? 560 : 680 }
+}
+
+struct TileHead: View {           // tile title, with an opener for its dialog on the right
+    let title: String
+    var action: String? = nil
+    var open: () -> Void = {}
+    var body: some View {
+        HStack {
+            Caps(title); Spacer()
+            if let a = action {
+                Button(action: open) {
+                    HStack(spacing: 4) {
+                        Text(a).font(.system(size: 11, weight: .medium))
+                        Image(systemName: "chevron.right").font(.system(size: 8, weight: .bold))
+                    }
+                    .foregroundStyle(T.dim).padding(.horizontal, 8).frame(height: 22)
+                }
+                .buttonStyle(RogButtonStyle(cut: 5))
+                .accessibilityLabel("\(title): \(a)")
+            }
         }
     }
 }
 
 struct RogWindowView: View {
     @ObservedObject var m: RogModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
-        HStack(spacing: 0) {
-            sidebar
-            VStack(alignment: .leading, spacing: 0) {
-                header
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
-                        if !m.st.present { offline }
-                        switch m.page {
-                        case .performance: if m.advanced { AdvancedPage(m: m) } else { DashboardPage(m: m) }
-                        case .battery: BatteryPage(m: m)
-                        case .lighting: LightingPage(m: m)
-                        case .general: GeneralPage(m: m)
-                        }
-                    }
-                    .disabled(!m.st.present && m.page != .general)
-                    .padding(.horizontal, 28).padding(.bottom, 28)
-                    .frame(maxWidth: 1100, alignment: .leading)
+        VStack(alignment: .leading, spacing: 12) {
+            header
+            Group {
+                HStack(alignment: .top, spacing: 12) {
+                    LiveCard(m: m)
+                    ModeCard(m: m).frame(width: 350)
                 }
+                .fixedSize(horizontal: false, vertical: true)
+                HStack(alignment: .top, spacing: 12) {
+                    BatteryTile(m: m)
+                    LimitsTile(m: m)
+                    LightingTile(m: m)
+                }
+                .fixedSize(horizontal: false, vertical: true)
             }
-            .frame(maxWidth: .infinity, alignment: .topLeading).background(T.bg)
+            .disabled(!m.st.present)
+            Spacer(minLength: 0)
         }
-        .frame(minWidth: 960, minHeight: 660)
+        .padding(.horizontal, 22).padding(.top, 34).padding(.bottom, 22)
+        .frame(minWidth: 1000, maxWidth: .infinity, minHeight: 660, maxHeight: .infinity, alignment: .topLeading)
+        .background(T.bg)
+        .overlay {
+            if let d = m.dialog {
+                DialogShell(kind: d, m: m) { m.dialog = nil }
+                    .transition(.opacity)
+            }
+        }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: m.dialog)
         .environment(\.colorScheme, .dark)
         .tint(T.red)
     }
 
-    var sidebar: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("ROG CONTROL").font(T.num(14, .bold)).foregroundStyle(T.text)
+    var header: some View {
+        HStack(alignment: .center, spacing: 10) {
+            HStack(alignment: .lastTextBaseline, spacing: 10) {
+                Text("ROG CONTROL").font(T.num(16, .bold)).foregroundStyle(T.text)
                 Caps("Zephyrus G14 · GA403WM")
             }
-            .padding(.horizontal, 8).padding(.top, 52).padding(.bottom, 22)
-            ForEach(RogPage.allCases) { p in
-                let on = p == m.page
-                Button { m.page = p; m.advanced = false } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: p.symbol).font(.system(size: 13, weight: .medium)).frame(width: 18).foregroundStyle(on ? T.red : T.dim)
-                        Text(p.rawValue).font(.system(size: 13, weight: on ? .semibold : .regular)).foregroundStyle(on ? T.text : T.dim)
-                        Spacer()
-                    }
-                    .padding(.horizontal, 10).frame(height: 34)
-                    .background(on ? T.raised : Color.clear, in: Chamfer(cut: 8))
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityAddTraits(on ? .isSelected : [])
-            }
+            .padding(.leading, 68)        // clear the traffic lights
             Spacer()
-            HStack(spacing: 8) {
-                Circle().fill(m.st.present ? Color.green : T.amber).frame(width: 6, height: 6)
-                Text(m.st.present ? "AsusWmi connected" : "AsusWmi not loaded").font(.system(size: 11)).foregroundStyle(T.dim)
+            chip(dot: m.st.present ? .green : T.amber, m.st.present ? "AsusWmi connected" : "AsusWmi not loaded, controls are off until it loads through OpenCore")
+            if m.st.present { chip(icon: m.st.ac ? "powerplug.fill" : "battery.75percent", m.st.ac ? "On charger" : "On battery") }
+            Button { m.dialog = .settings } label: {
+                Image(systemName: "gearshape.fill").font(.system(size: 12)).foregroundStyle(T.dim).frame(width: 28, height: 26)
             }
-            .padding(.horizontal, 10).padding(.bottom, 16)
+            .buttonStyle(RogButtonStyle(cut: 6)).help("Settings").accessibilityLabel("Settings")
         }
-        .padding(.horizontal, 10).frame(width: 220).background(T.side)
-        .overlay(alignment: .trailing) { Rectangle().fill(T.line).frame(width: 1) }
     }
-
-    var header: some View {
-        HStack(alignment: .lastTextBaseline, spacing: 10) {
-            if m.page == .performance && m.advanced {
-                Button { m.advanced = false } label: { Text("Performance").font(T.num(20)).foregroundStyle(T.dim) }.buttonStyle(.plain)
-                Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(T.faint)
-                Text("Advanced").font(T.num(20)).foregroundStyle(T.text)
-            } else {
-                Text(m.page.rawValue).font(T.num(20)).foregroundStyle(T.text)
-            }
-            Spacer()
-            if m.page == .performance && m.st.present {
-                Label(m.st.ac ? "On charger" : "On battery", systemImage: m.st.ac ? "powerplug.fill" : "battery.75percent")
-                    .font(.system(size: 11)).foregroundStyle(T.dim)
-            }
+    func chip(dot: Color? = nil, icon: String? = nil, _ text: String) -> some View {
+        HStack(spacing: 6) {
+            if let d = dot { Circle().fill(d).frame(width: 6, height: 6) }
+            if let i = icon { Image(systemName: i).font(.system(size: 10)).foregroundStyle(T.dim) }
+            Text(text).font(.system(size: 11)).foregroundStyle(T.dim)
         }
-        .padding(.horizontal, 28).padding(.top, 40).padding(.bottom, 18)
-    }
-
-    var offline: some View {
-        Card(pad: 14) {
-            HStack(spacing: 10) {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(T.amber)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("AsusWmi is not loaded").font(.system(size: 13, weight: .semibold)).foregroundStyle(T.text)
-                    Text("Hardware controls are off until the kext loads through OpenCore.").font(.system(size: 11)).foregroundStyle(T.dim)
-                }
-            }
-        }
+        .padding(.horizontal, 10).frame(height: 26)
+        .background(T.surface, in: Chamfer(cut: 6)).overlay(Chamfer(cut: 6).stroke(T.line))
     }
 }
 
-// ---- Performance -----------------------------------------------------------------------------------------------------------------
-struct DashboardPage: View {
+// ---- top row ---------------------------------------------------------------------------------------------------------------------
+struct LiveCard: View {
     @ObservedObject var m: RogModel
     var limitNow: Int { m.st.ppt[2] > 0 ? m.st.ppt[2] : 0 }
     var body: some View {
-        Card {
-            HStack(alignment: .center, spacing: 28) {
-                Gauge(value: m.tctl ?? 0, maximum: 100, text: m.tctl.map { String(format: "%.0f", $0) } ?? "–", unit: "°C", caption: "CPU", size: 170)
+        Card(pad: 16, stretch: true) {
+            HStack(alignment: .center, spacing: 20) {
+                Gauge(value: m.tctl ?? 0, maximum: 100, text: m.tctl.map { String(format: "%.0f", $0) } ?? "–", unit: "°C", caption: "CPU", size: 150)
                 Gauge(value: m.watts ?? 0, maximum: Double(limitNow > 0 ? limitNow : 80),
-                      text: m.watts.map { String(format: "%.0f", $0) } ?? "–", unit: "W", caption: "Package", size: 124)
-                VStack(alignment: .leading, spacing: 16) {
+                      text: m.watts.map { String(format: "%.0f", $0) } ?? "–", unit: "W", caption: "Package", size: 108)
+                VStack(alignment: .leading, spacing: 13) {
                     fan("CPU fan", m.st.cpuFan)
                     fan("GPU fan", m.st.gpuFan)
                     HStack(spacing: 18) {
@@ -1092,52 +1105,19 @@ struct DashboardPage: View {
             }
             if (m.tctl ?? 0) >= 90 {
                 Label("Running hot. Silent lowers power and heat.", systemImage: "thermometer.high").font(.system(size: 11)).foregroundStyle(T.amber)
-                    .padding(.top, 8)
+                    .padding(.top, 6)
             }
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 14) {
-                    Caps(historyCaption)
-                    Spacer()
+                    Caps(historyCaption); Spacer()
                     legend(T.red, "Temperature", dashed: false)
                     legend(Color.white.opacity(0.55), "Power", dashed: true)
                 }
-                LiveChart(samples: m.history)
+                LiveChart(samples: m.history, height: 150)
             }
-            .padding(.top, 14)
+            .padding(.top, 10)
         }
-        HStack(spacing: 10) {
-            ForEach(Mode.allCases) { mode in modeCard(mode) }
-        }
-        .fixedSize(horizontal: false, vertical: true)
-        ErrorLine(text: m.profileError)
-        HStack(alignment: .top, spacing: 10) {
-            Card(pad: 16, stretch: true) {
-                Caps("Switch automatically")
-                VStack(spacing: 10) {
-                    sourceRow(ac: true)
-                    sourceRow(ac: false)
-                }
-                .padding(.top, 10)
-            }
-            Button { m.advanced = true } label: {
-                Card(pad: 16, stretch: true) {
-                    HStack(alignment: .top) {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Caps("Advanced")
-                            Text("Custom power limits and fan curves").font(.system(size: 13, weight: .medium)).foregroundStyle(T.text)
-                            Text("Set how much power the CPU may draw, and for how long.").font(.system(size: 11)).foregroundStyle(T.dim)
-                        }
-                        Spacer()
-                        Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).foregroundStyle(T.dim).padding(.top, 18)
-                    }
-                }
-                .contentShape(Chamfer())
-            }
-            .buttonStyle(.plain)
-        }
-        .fixedSize(horizontal: false, vertical: true)
     }
-
     var historyCaption: String {
         guard let first = m.history.first?.date else { return "Live" }
         let minutes = max(1, Int(Date().timeIntervalSince(first) / 60))
@@ -1151,60 +1131,75 @@ struct DashboardPage: View {
         return s
     }
     func fan(_ name: String, _ rpm: Int) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 5) {
             HStack(alignment: .firstTextBaseline) {
                 Caps(name); Spacer()
-                Text(verbatim: m.st.present ? String(rpm) : "–").font(T.num(15)).monospacedDigit().foregroundStyle(T.text)
-                    .rollingNumber(Double(rpm)).animation(.easeOut(duration: 0.3), value: rpm)
+                Text(verbatim: m.st.present ? String(rpm) : "–").font(T.num(14)).monospacedDigit().foregroundStyle(T.text)
                 Text("rpm").font(.system(size: 10)).foregroundStyle(T.dim)
             }
-            Segments(lit: m.st.present ? min(20, rpm * 20 / 6500) : 0, total: 20, height: 9)
+            Segments(lit: m.st.present ? min(20, rpm * 20 / 6500) : 0, total: 20, height: 8)
         }
         .accessibilityElement(children: .ignore).accessibilityLabel(name).accessibilityValue("\(rpm) rpm")
     }
     func stat(_ k: String, _ v: String) -> some View {
-        VStack(alignment: .leading, spacing: 3) { Caps(k); Text(v).font(T.num(13, .medium)).foregroundStyle(T.text).lineLimit(1) }
+        VStack(alignment: .leading, spacing: 3) { Caps(k); Text(v).font(T.num(12.5, .medium)).foregroundStyle(T.text).lineLimit(1) }
     }
     func legend(_ c: Color, _ s: String, dashed: Bool) -> some View {
-        HStack(spacing: 6) { Rectangle().fill(c).frame(width: 14, height: dashed ? 1 : 2); Text(s).font(.system(size: 10)).foregroundStyle(T.dim) }
+        HStack(spacing: 5) { Rectangle().fill(c).frame(width: 12, height: dashed ? 1 : 2); Text(s).font(.system(size: 10)).foregroundStyle(T.dim) }
     }
-    func modeCard(_ mode: Mode) -> some View {
-        let active = m.activeMode == mode
+}
+
+struct ModeCard: View {
+    @ObservedObject var m: RogModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var body: some View {
+        Card(pad: 14, stretch: true) {
+            TileHead(title: "Mode")
+            VStack(spacing: 6) {
+                ForEach(Mode.allCases) { mode in row(mode) }
+            }
+            .padding(.top, 10)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: m.activeMode)
+            ErrorLine(text: m.profileError).padding(.top, 6)
+            Rectangle().fill(T.line).frame(height: 1).padding(.vertical, 12)
+            Caps("Switch automatically")
+            VStack(spacing: 8) { sourceRow(ac: true); sourceRow(ac: false) }.padding(.top, 8)
+        }
+    }
+    func row(_ mode: Mode) -> some View {
+        let on = m.activeMode == mode
         let unavailable = mode == .turbo && !m.st.ac
         let desc = unavailable ? "Needs the charger" :
             mode == .manual ? (m.customReady ? "\(m.settings.spl) / \(m.settings.sppt) / \(m.settings.fppt) W, your limits" : "Set up your own limits")
             : mode.detail
         return Button {
-            if mode == .manual && !m.customReady { m.advanced = true } else { m.choose(mode) }
+            if mode == .manual && !m.customReady { m.dialog = .limits } else { m.choose(mode) }
         } label: {
-            Card(cut: 12, pad: 14, active: active, stretch: true) {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        ModeBadge(mode: mode, active: active, size: 26)
-                        Spacer()
-                        if active { Text("ACTIVE").font(.system(size: 9, weight: .bold)).tracking(1.2).foregroundStyle(T.red) }
-                    }
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(mode.title).font(T.num(14)).foregroundStyle(T.text)
-                        Text(desc).font(.system(size: 11)).foregroundStyle(T.dim).lineLimit(1)
-                    }
-                    Segments(lit: mode.level, total: 4, height: 6, color: active ? T.red : Color.white.opacity(0.45))
+            HStack(spacing: 10) {
+                ModeBadge(mode: mode, active: on, size: 26)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(mode.title).font(T.num(12.5)).foregroundStyle(T.text)
+                    Text(desc).font(.system(size: 10.5)).foregroundStyle(T.dim).lineLimit(1)
                 }
+                Spacer(minLength: 4)
+                Segments(lit: mode.level, total: 4, height: 5, color: on ? T.red : Color.white.opacity(0.4)).frame(width: 40)
             }
-            .contentShape(Chamfer(cut: 12))
+            .padding(.horizontal, 10).frame(height: 46)
+            .background(on ? T.red.opacity(0.12) : T.raised.opacity(0.6), in: Chamfer(cut: 8))
+            .overlay(Chamfer(cut: 8).stroke(on ? T.red : Color.clear))
+            .contentShape(Chamfer(cut: 8))
         }
         .buttonStyle(.plain)
         .disabled(unavailable)
         .opacity(unavailable ? 0.45 : 1)
-        .animation(.easeOut(duration: 0.18), value: active)
-        .accessibilityLabel(mode.title).accessibilityHint(desc).accessibilityAddTraits(active ? .isSelected : [])
+        .accessibilityLabel(mode.title).accessibilityHint(desc).accessibilityAddTraits(on ? .isSelected : [])
     }
     func sourceRow(ac: Bool) -> some View {
         let current = m.st.ac == ac
         let choices: [Mode] = ac ? Mode.allCases : [.silent, .performance, .manual]
-        return HStack(spacing: 10) {
-            Image(systemName: ac ? "powerplug.fill" : "battery.75percent").font(.system(size: 12)).foregroundStyle(current ? T.text : T.dim).frame(width: 18)
-            Text(ac ? "On charger" : "On battery").font(.system(size: 13)).foregroundStyle(current ? T.text : T.dim)
+        return HStack(spacing: 8) {
+            Image(systemName: ac ? "powerplug.fill" : "battery.75percent").font(.system(size: 11)).foregroundStyle(current ? T.text : T.dim).frame(width: 16)
+            Text(ac ? "On charger" : "On battery").font(.system(size: 12)).foregroundStyle(current ? T.text : T.dim)
             if current { Text("NOW").font(.system(size: 9, weight: .bold)).tracking(1.2).foregroundStyle(T.red) }
             Spacer()
             RogMenu(title: m.mode(forAC: ac).title, items: choices.map(\.title)) { m.setMode(choices[$0], forAC: ac) }
@@ -1212,14 +1207,179 @@ struct DashboardPage: View {
     }
 }
 
-struct AdvancedPage: View {
+// ---- bottom row ------------------------------------------------------------------------------------------------------------------
+extension RogModel {
+    var batteryLevel: Int? { st.batFull > 0 ? min(100, max(0, st.batNow * 100 / st.batFull)) : nil }
+    var batteryState: String {
+        let limit = st.charge.map { " at \($0)%" } ?? ""
+        if st.batState & 2 != 0 { return "Charging" + (st.batRate > 0 ? ", \(st.batRate) mA" : "") }
+        if st.batState & 1 != 0 { return "On battery" + (st.batRate > 0 ? ", \(st.batRate) mA" : "") }
+        return st.ac ? "Holding\(limit)" : "On battery"
+    }
+}
+
+struct BatteryTile: View {
     @ObservedObject var m: RogModel
-    @State private var fan = 0
+    let presets = [60, 80, 100]
     var body: some View {
-        Card {
+        Card(pad: 14, stretch: true) {
+            TileHead(title: "Battery", action: "Details") { m.dialog = .battery }
+            HStack(alignment: .firstTextBaseline, spacing: 2) {
+                Text(verbatim: m.batteryLevel.map(String.init) ?? "–").font(T.num(34)).monospacedDigit().foregroundStyle(T.text)
+                Text("%").font(T.num(14, .medium)).foregroundStyle(T.dim)
+                Spacer()
+                Text(m.batteryState).font(.system(size: 11)).foregroundStyle(T.dim)
+            }
+            .padding(.top, 8)
+            Segments(lit: (m.batteryLevel ?? 0) * 20 / 100, total: 20, height: 10).padding(.top, 4)
+            HStack {
+                Text("Charge limit").font(.system(size: 12)).foregroundStyle(T.text); Spacer()
+                Pills(items: presets.map { "\($0)%" }, selected: m.st.charge.flatMap { presets.firstIndex(of: $0) }, minWidth: 30, pad: 7,
+                      label: "Charge limit") { m.setCharge(presets[$0]) }
+                    .disabled(m.st.charge == nil)
+            }
+            .padding(.top, 14)
+            ErrorLine(text: m.chargeError).padding(.top, 6)
+        }
+    }
+}
+
+struct LimitsTile: View {
+    @ObservedObject var m: RogModel
+    var body: some View {
+        Card(pad: 14, stretch: true) {
+            TileHead(title: "Custom limits", action: "Edit") { m.dialog = .limits }
+            let top = Double(max(m.settings.fppt, m.settings.sppt, m.settings.spl, 1))
+            HStack(alignment: .bottom, spacing: 8) {
+                bar("Burst", m.settings.fppt, top, 0.95)
+                bar("Boost", m.settings.sppt, top, 0.65)
+                bar("Sustained", m.settings.spl, top, 0.40)
+            }
+            .frame(height: 92).padding(.top, 8)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Custom limits: burst \(m.settings.fppt), short boost \(m.settings.sppt), sustained \(m.settings.spl) watts")
+            HStack {
+                Text("Fans follow").font(.system(size: 12)).foregroundStyle(T.text); Spacer()
+                Button { m.dialog = .fans } label: {
+                    HStack(spacing: 5) {
+                        Text("\(m.settings.fanBase.title) curve").font(.system(size: 11.5, weight: .medium))
+                        Image(systemName: "chart.xyaxis.line").font(.system(size: 10))
+                    }
+                    .padding(.horizontal, 9).frame(height: 26)
+                }
+                .buttonStyle(RogButtonStyle(cut: 6)).help("Show the fan curves")
+            }
+            .padding(.top, 12)
+        }
+    }
+    func bar(_ name: String, _ w: Int, _ top: Double, _ a: Double) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("\(w) W").font(T.num(11)).foregroundStyle(T.text)
+            Rectangle().fill(T.red.opacity(a)).frame(height: max(3, CGFloat(Double(w) / top) * 50))
+            Text(name).font(.system(size: 10)).foregroundStyle(T.dim)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+struct LightingTile: View {
+    @ObservedObject var m: RogModel
+    var slash: Slash { m.currentSlash }
+    var body: some View {
+        Card(pad: 14, stretch: true) {
+            if !m.st.lighting {
+                TileHead(title: "Lighting")
+                Text("Lighting needs AsusWmi ABI 3 and the N-KEY keyboard.").font(.system(size: 11)).foregroundStyle(T.dim).padding(.top, 10)
+            } else {
+                TileHead(title: "Lighting", action: "Animations") { m.dialog = .slash }
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Caps("Slash")
+                        Text(slash.bright > 0 ? Slash.modes[min(slash.mode, Slash.modes.count - 1)] : "Off").font(T.num(18)).foregroundStyle(T.text)
+                    }
+                    Spacer()
+                    Toggle("Slash", isOn: slashOn(m)).toggleStyle(.switch).labelsHidden().tint(T.red).help("Fn+F4 turns it on and off")
+                }
+                .padding(.top, 8)
+                HStack {
+                    Text("Brightness").font(.system(size: 12)).foregroundStyle(T.text); Spacer()
+                    Pills(items: ["Low", "Med", "High"], selected: max(1, slash.bright) - 1, minWidth: 30, pad: 7, label: "Slash brightness") {
+                        var s = slash; s.bright = $0 + 1; m.setSlash(s)
+                    }
+                    .disabled(slash.bright == 0).opacity(slash.bright == 0 ? 0.5 : 1)
+                }
+                .padding(.top, 10)
+                HStack {
+                    Text("Keyboard").font(.system(size: 12)).foregroundStyle(T.text); Spacer()
+                    Pills(items: ["Off", "Low", "Med", "High"], selected: m.st.kbd, minWidth: 28, pad: 6, label: "Keyboard") { m.setKbd($0) }
+                        .disabled(m.st.kbd == nil)
+                        .help("Fn+F2 and Fn+F3 change it too")
+                }
+                .padding(.top, 8)
+                ErrorLine(text: m.lightingError).padding(.top, 6)
+            }
+        }
+    }
+}
+
+// a brightness of 0 is "off"; the last brightness is kept so switching back on restores it
+@MainActor func slashOn(_ m: RogModel) -> Binding<Bool> {
+    Binding(get: { m.currentSlash.bright > 0 }, set: { on in
+        var s = m.currentSlash
+        s.bright = on ? (UserDefaults.standard.object(forKey: "slash.on.bright") as? Int ?? 2) : 0
+        if !on { UserDefaults.standard.set(m.currentSlash.bright, forKey: "slash.on.bright") }
+        m.setSlash(s)
+    })
+}
+
+// ---- dialogs ---------------------------------------------------------------------------------------------------------------------
+// Dims the screen and shows one chamfered sheet. The close button, Esc and a click on the dim area close it.
+struct DialogShell: View {
+    let kind: RogDialog
+    @ObservedObject var m: RogModel
+    let close: () -> Void
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.6).contentShape(Rectangle()).onTapGesture(perform: close)
+            VStack(alignment: .leading, spacing: 0) {
+                HStack {
+                    Text(kind.title).font(T.num(16)).foregroundStyle(T.text)
+                    Spacer()
+                    Button(action: close) {
+                        Image(systemName: "xmark").font(.system(size: 11, weight: .bold)).foregroundStyle(T.dim).frame(width: 26, height: 26)
+                    }
+                    .buttonStyle(RogButtonStyle(cut: 6))
+                    .keyboardShortcut(.cancelAction)
+                    .accessibilityLabel("Close")
+                }
+                .padding(.bottom, 16)
+                Group {
+                    switch kind {
+                    case .limits: LimitsEditor(m: m)
+                    case .fans: FanCurves(m: m)
+                    case .slash: SlashEditor(m: m)
+                    case .battery: BatteryDetails(m: m)
+                    case .settings: SettingsEditor(m: m)
+                    }
+                }
+                .disabled(!m.st.present && kind != .settings)
+            }
+            .padding(20).frame(width: kind.width)
+            .background(T.surface, in: Chamfer(cut: 16)).overlay(Chamfer(cut: 16).stroke(T.line))
+            .shadow(color: .black.opacity(0.6), radius: 30, y: 10)
+            .accessibilityElement(children: .contain)
+            .accessibilityAddTraits(.isModal)
+        }
+    }
+}
+
+struct LimitsEditor: View {
+    @ObservedObject var m: RogModel
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top, spacing: 28) {
                 VStack(alignment: .leading, spacing: 18) {
-                    Caps("Custom mode limits, \(m.st.ac ? "on charger" : "on battery")")
+                    Caps("Custom mode, \(m.st.ac ? "on charger" : "on battery")")
                     limit("Burst", "A few seconds when a load starts", "FPPT", $m.settings.fppt, m.st.ranges[2])
                     limit("Short boost", "The first few minutes", "SPPT", $m.settings.sppt, m.st.ranges[1])
                     limit("Sustained", "As long as the load lasts", "SPL", $m.settings.spl, m.st.ranges[0])
@@ -1257,20 +1417,6 @@ struct AdvancedPage: View {
             }
             .padding(.top, 20)
             ErrorLine(text: m.profileError).padding(.top, 8)
-        }
-        Card {
-            HStack {
-                Caps("Fan curve · \(m.curveMode.title)")
-                Spacer()
-                Pills(items: ["CPU", "GPU"], selected: fan, minWidth: 40, label: "Fan") { fan = $0 }
-            }
-            Group {
-                if let bytes = fan == 0 ? m.curve : m.gpuCurve { CurveChart(c: bytes) }
-                else { Text("The firmware did not return a fan curve.").font(.system(size: 12)).foregroundStyle(T.dim).frame(height: 120) }
-            }
-            .padding(.top, 10)
-            Text("Read from the firmware: fan speed by temperature. A reference, not live fan speed.")
-                .font(.system(size: 11)).foregroundStyle(T.dim).padding(.top, 6)
         }
     }
     func limit(_ name: String, _ desc: String, _ code: String, _ v: Binding<Int>, _ range: (Int, Int)) -> some View {
@@ -1316,97 +1462,102 @@ struct AdvancedPage: View {
     }
 }
 
-// ---- Battery ---------------------------------------------------------------------------------------------------------------------
-struct BatteryPage: View {
+struct FanCurves: View {
     @ObservedObject var m: RogModel
-    var level: Int? { m.st.batFull > 0 ? min(100, max(0, m.st.batNow * 100 / m.st.batFull)) : nil }
-    var state: String {
-        let limit = m.st.charge.map { " at \($0)%" } ?? ""
-        if m.st.batState & 2 != 0 { return "Charging" + (m.st.batRate > 0 ? ", \(m.st.batRate) mA" : "") }
-        if m.st.batState & 1 != 0 { return "On battery" + (m.st.batRate > 0 ? ", \(m.st.batRate) mA" : "") }
-        return m.st.ac ? "On charger · holding\(limit)" : "On battery"
-    }
+    @State private var fan = 0
     var body: some View {
-        Card {
-            HStack(alignment: .center, spacing: 28) {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(alignment: .firstTextBaseline, spacing: 2) {
-                        Text(verbatim: level.map(String.init) ?? "–").font(T.num(56)).monospacedDigit().foregroundStyle(T.text)
-                        Text("%").font(T.num(20, .medium)).foregroundStyle(T.dim)
-                    }
-                    Text(state).font(.system(size: 12)).foregroundStyle(T.dim)
-                }
-                .frame(width: 220, alignment: .leading)
-                cell.frame(height: 110)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Caps("\(m.curveMode.title) mode")
+                Spacer()
+                Pills(items: ["CPU", "GPU"], selected: fan, minWidth: 40, label: "Fan") { fan = $0 }
             }
-        }
-        HStack(spacing: 10) {
-            preset(60, "Desk", "Plugged in most of the day. Kindest to the battery.")
-            preset(80, "Everyday", "Good balance of runtime and battery life.")
-            preset(100, "Travel", "Full charge for a long day away from a socket.")
-        }
-        .fixedSize(horizontal: false, vertical: true)
-        ErrorLine(text: m.chargeError)
-        HStack(spacing: 10) {
-            Card(pad: 16, stretch: true) {
-                Caps("Health")
-                HStack(alignment: .firstTextBaseline, spacing: 2) {
-                    Text(verbatim: m.st.batDesign > 5 && m.st.batFull > 0 ? String(format: "%.0f", 100.0 * Double(m.st.batFull) / Double(m.st.batDesign)) : "–")
-                        .font(T.num(26)).foregroundStyle(T.text)
-                    Text("%").font(T.num(13)).foregroundStyle(T.dim)
-                }
-                .padding(.top, 6)
-                Text(m.st.batFull > 0 ? "\(String(m.st.batFull)) of \(String(m.st.batDesign)) mAh design capacity" : "Not reported by the firmware")
-                    .font(.system(size: 11)).foregroundStyle(T.dim)
+            Group {
+                if let bytes = fan == 0 ? m.curve : m.gpuCurve { CurveChart(c: bytes) }
+                else { Text("The firmware did not return a fan curve.").font(.system(size: 12)).foregroundStyle(T.dim).frame(height: 120) }
             }
-            Card(pad: 16, stretch: true) {
-                Caps("Now")
-                HStack(alignment: .firstTextBaseline, spacing: 2) {
-                    Text(verbatim: String(m.st.batRate)).font(T.num(26)).foregroundStyle(T.text)
-                    Text("mA").font(T.num(13)).foregroundStyle(T.dim)
-                }
-                .padding(.top, 6)
-                Text(m.st.batState & 2 != 0 ? "Charging" : m.st.batState & 1 != 0 ? "Discharging" : "Not charging, held at the limit")
-                    .font(.system(size: 11)).foregroundStyle(T.dim)
-            }
+            .padding(.top, 10)
+            Text("Read from the firmware: fan speed by temperature. A reference, not live fan speed.")
+                .font(.system(size: 11)).foregroundStyle(T.dim).padding(.top, 6)
         }
-        .fixedSize(horizontal: false, vertical: true)
     }
-    // the battery as 20 slanted cells, with the charge limit drawn on it
-    var cell: some View {
-        GeometryReader { g in
-            let w = g.size.width - 10
-            let lit = (level ?? 0) * 20 / 100
-            let limitCell = (m.st.charge ?? 100) * 20 / 100
-            let limitX = 6 + (w - 12) * CGFloat(m.st.charge ?? 100) / 100
-            ZStack(alignment: .leading) {
-                Rectangle().stroke(Color.white.opacity(0.25), lineWidth: 1.5).frame(width: w, height: 56)
-                Rectangle().fill(Color.white.opacity(0.25)).frame(width: 5, height: 22).offset(x: w + 2)
-                HStack(spacing: 3) {
-                    ForEach(0..<20, id: \.self) { i in
-                        Slant().fill(i < lit ? T.red : (i < limitCell ? Color.white.opacity(0.10) : Color.white.opacity(0.03)))
+}
+
+struct SlashEditor: View {
+    @ObservedObject var m: RogModel
+    var slash: Slash { m.currentSlash }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 8) {
+                ForEach(Slash.modes.indices, id: \.self) { i in
+                    let on = slash.bright > 0 && slash.mode == i
+                    Button {
+                        var s = slash; s.mode = i; if s.bright == 0 { s.bright = 2 }; m.setSlash(s)
+                    } label: {
+                        Text(Slash.modes[i]).font(.system(size: 12, weight: on ? .semibold : .regular))
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).frame(height: 34)
                     }
-                }
-                .frame(width: w - 12, height: 44).offset(x: 6)
-                .animation(.easeOut(duration: 0.3), value: lit)
-                if let c = m.st.charge, c < 100 {
-                    Rectangle().fill(T.text).frame(width: 2, height: 74).offset(x: limitX)
-                    Text("LIMIT \(c)%").font(.system(size: 9, weight: .bold)).tracking(1.2).foregroundStyle(T.text).fixedSize()
-                        .offset(x: limitX - 26, y: -48)
+                    .buttonStyle(RogButtonStyle(selected: on, cut: 8))
+                    .accessibilityAddTraits(on ? .isSelected : [])
                 }
             }
-            .frame(height: g.size.height)
-            .animation(.easeOut(duration: 0.3), value: m.st.charge)
+            HStack {
+                Text("Pause between runs").font(.system(size: 12)).foregroundStyle(T.text); Spacer()
+                Pills(items: (0...5).map(String.init), selected: slash.interval, minWidth: 24, label: "Pause") {
+                    var s = slash; s.interval = $0; m.setSlash(s)
+                }
+                .disabled(slash.bright == 0).opacity(slash.bright == 0 ? 0.5 : 1)
+            }
+            .padding(.top, 16)
+            Text("Fn+F4 turns Slash on and off.").font(.system(size: 11)).foregroundStyle(T.dim).padding(.top, 10)
+            ErrorLine(text: m.lightingError).padding(.top, 6)
         }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Battery").accessibilityValue("\(level ?? 0) percent, limit \(m.st.charge ?? 100) percent")
+    }
+}
+
+struct BatteryDetails: View {
+    @ObservedObject var m: RogModel
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                preset(60, "Desk", "Plugged in most of the day. Kindest to the battery.")
+                preset(80, "Everyday", "Good balance of runtime and battery life.")
+                preset(100, "Travel", "Full charge for a long day away from a socket.")
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 10) {
+                Card(pad: 14, stretch: true) {
+                    Caps("Health")
+                    HStack(alignment: .firstTextBaseline, spacing: 2) {
+                        Text(verbatim: m.st.batDesign > 5 && m.st.batFull > 0 ? String(format: "%.0f", 100.0 * Double(m.st.batFull) / Double(m.st.batDesign)) : "–")
+                            .font(T.num(24)).foregroundStyle(T.text)
+                        Text("%").font(T.num(12)).foregroundStyle(T.dim)
+                    }
+                    .padding(.top, 6)
+                    Text(m.st.batFull > 0 ? "\(String(m.st.batFull)) of \(String(m.st.batDesign)) mAh design capacity" : "Not reported by the firmware")
+                        .font(.system(size: 11)).foregroundStyle(T.dim)
+                }
+                Card(pad: 14, stretch: true) {
+                    Caps("Now")
+                    HStack(alignment: .firstTextBaseline, spacing: 2) {
+                        Text(verbatim: String(m.st.batRate)).font(T.num(24)).foregroundStyle(T.text)
+                        Text("mA").font(T.num(12)).foregroundStyle(T.dim)
+                    }
+                    .padding(.top, 6)
+                    Text(m.st.batState & 2 != 0 ? "Charging" : m.st.batState & 1 != 0 ? "Discharging" : "Not charging, held at the limit")
+                        .font(.system(size: 11)).foregroundStyle(T.dim)
+                }
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            ErrorLine(text: m.chargeError)
+        }
     }
     func preset(_ v: Int, _ name: String, _ desc: String) -> some View {
         let active = m.st.charge == v
         return Button { m.setCharge(v) } label: {
-            Card(cut: 12, pad: 16, active: active, stretch: true) {
+            Card(cut: 12, pad: 14, active: active, stretch: true) {
                 HStack {
-                    Text("\(v)%").font(T.num(22)).foregroundStyle(active ? T.red : T.text)
+                    Text("\(v)%").font(T.num(20)).foregroundStyle(active ? T.red : T.text)
                     Spacer()
                     if active { Text("ACTIVE").font(.system(size: 9, weight: .bold)).tracking(1.2).foregroundStyle(T.red) }
                 }
@@ -1422,143 +1573,30 @@ struct BatteryPage: View {
     }
 }
 
-// ---- Lighting --------------------------------------------------------------------------------------------------------------------
-struct SlashPreview: View {
-    let on: Bool, bright: Int
-    var body: some View {
-        ZStack {
-            Rectangle().fill(Color(red: 0.13, green: 0.14, blue: 0.16)).frame(width: 300, height: 190)
-                .overlay(Rectangle().stroke(Color.white.opacity(0.10)))
-            HStack(spacing: 5) {
-                ForEach(0..<7, id: \.self) { i in
-                    let base = [0.25, 0.45, 0.75, 1.0, 0.75, 0.45, 0.25][i]
-                    let a = on ? base * (0.45 + 0.55 * Double(bright) / 3) : 0.06
-                    Capsule().fill(Color.white.opacity(a)).frame(width: 26, height: 7)
-                        .shadow(color: Color.white.opacity(on ? a * 0.6 : 0), radius: i == 3 ? 6 : 3)
-                }
-            }
-            .rotationEffect(.degrees(-35))
-            .animation(.easeOut(duration: 0.25), value: on)
-            .animation(.easeOut(duration: 0.25), value: bright)
-        }
-        .accessibilityHidden(true)
-    }
-}
-
-struct LightingPage: View {
-    @ObservedObject var m: RogModel
-    var slash: Slash { m.currentSlash }
-    var body: some View {
-        if !m.st.lighting {
-            Card {
-                Text("Lighting is not available").font(.system(size: 13, weight: .semibold)).foregroundStyle(T.text)
-                Text("It needs AsusWmi ABI 3 and the N-KEY keyboard.").font(.system(size: 11)).foregroundStyle(T.dim).padding(.top, 2)
-            }
-        } else {
-            Card {
-                HStack(alignment: .center, spacing: 28) {
-                    SlashPreview(on: slash.bright > 0, bright: max(1, slash.bright))
-                    VStack(alignment: .leading, spacing: 14) {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Caps("Slash lighting")
-                                Text(slash.bright > 0 ? Slash.modes[min(slash.mode, Slash.modes.count - 1)] : "Off").font(T.num(22)).foregroundStyle(T.text)
-                            }
-                            Spacer()
-                            Toggle("Slash", isOn: slashOn).toggleStyle(.switch).labelsHidden().tint(T.red)
-                        }
-                        Group {
-                            HStack {
-                                Text("Brightness").font(.system(size: 12)).foregroundStyle(T.dim); Spacer()
-                                Pills(items: ["Low", "Med", "High"], selected: max(1, slash.bright) - 1, label: "Brightness") {
-                                    var s = slash; s.bright = $0 + 1; m.setSlash(s)
-                                }
-                            }
-                            HStack {
-                                Text("Pause between runs").font(.system(size: 12)).foregroundStyle(T.dim); Spacer()
-                                Pills(items: (0...5).map(String.init), selected: slash.interval, minWidth: 24, label: "Pause") {
-                                    var s = slash; s.interval = $0; m.setSlash(s)
-                                }
-                            }
-                        }
-                        .disabled(slash.bright == 0).opacity(slash.bright == 0 ? 0.5 : 1)
-                        Text("Fn+F4 turns it on and off.").font(.system(size: 11)).foregroundStyle(T.dim)
-                    }
-                }
-            }
-            Card {
-                Caps("Animation")
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 8) {
-                    ForEach(Slash.modes.indices, id: \.self) { i in
-                        let on = slash.bright > 0 && slash.mode == i
-                        Button {
-                            var s = slash; s.mode = i; if s.bright == 0 { s.bright = 2 }; m.setSlash(s)
-                        } label: {
-                            Text(Slash.modes[i]).font(.system(size: 12, weight: on ? .semibold : .regular))
-                                .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).frame(height: 34)
-                        }
-                        .buttonStyle(RogButtonStyle(selected: on, cut: 8))
-                        .accessibilityAddTraits(on ? .isSelected : [])
-                    }
-                }
-                .padding(.top, 12)
-            }
-            Card(pad: 16) {
-                HStack {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Caps("Keyboard backlight")
-                        Text("Fn+F2 and Fn+F3 change it too.").font(.system(size: 11)).foregroundStyle(T.dim)
-                    }
-                    Spacer()
-                    Pills(items: ["Off", "Low", "Med", "High"], selected: m.st.kbd, minWidth: 44, label: "Keyboard") { m.setKbd($0) }
-                        .disabled(m.st.kbd == nil)
-                }
-            }
-            ErrorLine(text: m.lightingError)
-        }
-    }
-    // a brightness of 0 is "off"; the last brightness is kept so switching back on restores it
-    var slashOn: Binding<Bool> {
-        Binding(get: { m.currentSlash.bright > 0 }, set: { on in
-            var s = m.currentSlash
-            s.bright = on ? (UserDefaults.standard.object(forKey: "slash.on.bright") as? Int ?? 2) : 0
-            if !on { UserDefaults.standard.set(m.currentSlash.bright, forKey: "slash.on.bright") }
-            m.setSlash(s)
-        })
-    }
-}
-
-// ---- General ---------------------------------------------------------------------------------------------------------------------
-struct GeneralPage: View {
+struct SettingsEditor: View {
     @ObservedObject var m: RogModel
     var body: some View {
-        Card {
+        VStack(alignment: .leading, spacing: 0) {
             HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Caps("Startup")
+                VStack(alignment: .leading, spacing: 3) {
                     Text("Open at login").font(.system(size: 13, weight: .medium)).foregroundStyle(T.text)
                     Text("Runs in the menu bar. Closing this window keeps hardware control active.").font(.system(size: 11)).foregroundStyle(T.dim)
                 }
                 Spacer()
                 Toggle("Open at login", isOn: Binding(get: { m.loginEnabled }, set: { m.setLogin($0) })).toggleStyle(.switch).labelsHidden().tint(T.red)
             }
-        }
-        Card {
-            Caps("About")
-            VStack(spacing: 0) {
-                row("Model") { Text("ROG Zephyrus G14 · GA403WM").foregroundStyle(T.dim) }
-                row("Version") { Text(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev").foregroundStyle(T.dim) }
-                row("Created by") { Link("thanhnndev", destination: URL(string: "https://github.com/thanhnndev")!).foregroundStyle(T.red) }
-                row("Inspired by", last: true) { Link("asusctl and asus-linux", destination: URL(string: "https://asus-linux.org")!).foregroundStyle(T.red) }
-            }
-            .padding(.top, 8)
+            Rectangle().fill(T.line).frame(height: 1).padding(.vertical, 14)
+            row("Model") { Text("ROG Zephyrus G14 · GA403WM").foregroundStyle(T.dim) }
+            row("Version") { Text(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev").foregroundStyle(T.dim) }
+            row("Created by") { Link("thanhnndev", destination: URL(string: "https://github.com/thanhnndev")!).foregroundStyle(T.red) }
+            row("Inspired by", last: true) { Link("asusctl and asus-linux", destination: URL(string: "https://asus-linux.org")!).foregroundStyle(T.red) }
             Text("Settings are saved separately for the charger and the battery, and restored when the power source changes.")
-                .font(.system(size: 11)).foregroundStyle(T.dim).padding(.top, 10)
+                .font(.system(size: 11)).foregroundStyle(T.dim).fixedSize(horizontal: false, vertical: true).padding(.top, 10)
         }
     }
     func row<C: View>(_ k: String, last: Bool = false, @ViewBuilder _ v: () -> C) -> some View {
         VStack(spacing: 0) {
-            HStack { Text(k).font(.system(size: 13)).foregroundStyle(T.text); Spacer(); v().font(.system(size: 12)) }.frame(height: 38)
+            HStack { Text(k).font(.system(size: 13)).foregroundStyle(T.text); Spacer(); v().font(.system(size: 12)) }.frame(height: 36)
             if !last { Rectangle().fill(T.line).frame(height: 1) }
         }
     }
@@ -1587,7 +1625,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         popover.animates = false
         popover.delegate = self
         popover.appearance = NSAppearance(named: .darkAqua)   // the panel uses the window's dark ROG look
-        popoverHost = NSHostingController(rootView: ContentView(m: model, openWindow: { [weak self] page, adv in self?.open(page, advanced: adv) }))
+        popoverHost = NSHostingController(rootView: ContentView(m: model, openWindow: { [weak self] d in self?.open(d) }))
         popoverHost.sizingOptions = .preferredContentSize   // follow SwiftUI's size, so a new line grows the panel downward
         popover.contentViewController = popoverHost
         item.button?.target = self
@@ -1652,21 +1690,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         showWindow(); return true
     }
-    func open(_ page: RogPage, advanced: Bool) {
-        model.page = page; model.advanced = advanced
+    func open(_ dialog: RogDialog?) {
+        model.dialog = dialog
         showWindow()
     }
     @objc func showWindow() {
         popover.performClose(nil)
         if window == nil {
-            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 780),
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 680),
                              styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
             w.title = "ROG Control"
             w.styleMask.insert(.fullSizeContentView)
             w.titlebarAppearsTransparent = true
             w.titleVisibility = .hidden
             w.isReleasedWhenClosed = false
-            w.minSize = NSSize(width: 960, height: 680)
+            w.minSize = NSSize(width: 1000, height: 660)
             w.appearance = NSAppearance(named: .darkAqua)   // the window is the ROG side: always dark
             w.backgroundColor = T.nsBG
             w.contentViewController = NSHostingController(rootView: RogWindowView(m: model))
@@ -1760,14 +1798,14 @@ enum Snapshot {
         let out = URL(fileURLWithPath: dir); try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
         let m = mock(manual: manual, offline: offline)
         let tag = offline ? "-offline" : manual ? "-manual" : ""
-        render(ContentView(m: m, openWindow: { _, _ in }), size: NSSize(width: 320, height: 0), dark: true,
+        render(ContentView(m: m, openWindow: { _ in }), size: NSSize(width: 320, height: 0), dark: true,
                to: out.appendingPathComponent("popover\(tag).png"))
-        // the window is always dark; each page at the default window size, full height
-        let pages: [(String, RogPage, Bool)] = [("1-dashboard", .performance, false), ("2-advanced", .performance, true),
-                                                ("3-battery", .battery, false), ("4-lighting", .lighting, false), ("5-general", .general, false)]
-        for (name, page, adv) in pages {
-            m.page = page; m.advanced = adv
-            render(RogWindowView(m: m).frame(width: 1120, height: 1000), size: NSSize(width: 1120, height: 1000), dark: true,
+        // the window is always dark: the main screen, then each dialog over it
+        let shots: [(String, RogDialog?)] = [("1-main", nil), ("2-limits", .limits), ("3-fans", .fans), ("4-slash", .slash),
+                                             ("5-battery", .battery), ("6-settings", .settings)]
+        for (name, d) in shots {
+            m.dialog = d
+            render(RogWindowView(m: m).frame(width: 1120, height: 680), size: NSSize(width: 1120, height: 680), dark: true,
                    to: out.appendingPathComponent("window-\(name)\(tag).png"))
         }
         print("snapshots in \(out.path)")

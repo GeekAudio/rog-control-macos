@@ -18,11 +18,15 @@ The panel and the window share one dark ROG look: one red accent (amber only for
 
 ## Primary panel
 
-Only what is used daily: CPU temperature (the one large number) with package power and fan speeds, the four modes as a 2x2 grid (Silent, Performance, Turbo, Custom), the charge limit and the keyboard light. Turbo is disabled on battery with "Needs charger". Custom shows "Set up…" until limits are saved and then opens the window at Performance › Advanced. After an automatic switch on plug or unplug, one line says what changed. Power limits are not in the panel.
+Only what is used daily: CPU temperature (the one large number) with package power and fan speeds, the four modes as a 2x2 grid (Silent, Performance, Turbo, Custom), the charge limit and the keyboard light. Turbo is disabled on battery with "Needs charger". Custom shows "Set up…" until limits are saved and then opens the window with the Custom limits dialog. After an automatic switch on plug or unplug, one line says what changed. Power limits are not in the panel.
 
 ## Window
 
-Performance shows gauges, fan bars, a live temperature and power chart, mode cards and the mode used on the charger and on battery. Performance › Advanced holds Custom limits in plain words (Burst, Short boost, Sustained, with FPPT/SPPT/SPL codes as small labels), a picture of how the CPU uses them, Save to Custom and the firmware fan curve. Battery, Lighting (Slash and keyboard) and General complete it.
+One screen, no side menu (like NitroSense). The top row is the live card (CPU and package gauges, fan bars, power limit, GPU mode, TGP and a temperature and power chart) and the mode card (four mode rows plus the mode used on the charger and on battery). The bottom row has three tiles with their everyday control inline: Battery (level and charge limit), Custom limits (burst, short boost, sustained bars and the fan curve they follow) and Lighting (Slash on/off and brightness, keyboard brightness).
+
+Anything set up once opens as a dialog over the dimmed screen: Custom limits (sliders in plain words with FPPT/SPPT/SPL codes as small labels, a picture of how the CPU uses them, Reset and Save to Custom), Fan curves (firmware CPU and GPU curves), Slash animations, Battery (presets, health, current) and Settings (open at login, about). The close button, Esc and a click on the dim area close a dialog. Without AsusWmi the header chip says so and the controls are off.
+
+Temperature and package power are smoothed (exponential average) and the shown value only moves on a change of at least 0.75 °C or 1 W, so the numbers and gauges do not roll on every 2 s read.
 
 Motion is brief: numbers roll on macOS 14+, gauges and segments ease, mode selection animates; Reduce Motion turns the panel's motion off. Nothing spins.
 

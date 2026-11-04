@@ -35,17 +35,20 @@ are untested; the power-limit ranges are the GA403WM's. Per-feature detail and t
 
 ## Screenshots
 
-<p align="center"><img src="docs/images/rogcontrol-popover.png" alt="RogControl menu bar panel" width="320">&nbsp;&nbsp;<img src="docs/images/rogcontrol-window.png" alt="RogControl window, Performance" width="560"></p>
-<p align="center"><em>Menu bar panel and the Performance page</em></p>
+<p align="center"><img src="docs/images/rogcontrol-window.png" alt="RogControl window: live readings, mode, battery, custom limits and lighting on one screen" width="860"></p>
+<p align="center"><em>One screen: live readings and mode on top, battery, Custom limits and lighting below. Setup opens as a dialog.</em></p>
 
-<p align="center"><img src="docs/images/fan-curves.png" alt="RogControl window, Performance › Advanced: custom limits and firmware fan curve" width="720"></p>
-<p align="center"><em>Performance › Advanced: Custom power limits in plain words and the firmware fan curve</em></p>
+<p align="center"><img src="docs/images/rogcontrol-popover.png" alt="RogControl menu bar panel" width="320"></p>
+<p align="center"><em>Menu bar panel</em></p>
 
-<p align="center"><img src="docs/images/rogcontrol-battery.png" alt="RogControl window, Battery" width="440">&nbsp;&nbsp;<img src="docs/images/rogcontrol-lighting.png" alt="RogControl window, Lighting" width="440"></p>
-<p align="center"><em>Battery (charge limit presets, health) and Lighting (Slash, keyboard)</em></p>
+<p align="center"><img src="docs/images/rogcontrol-limits.png" alt="Custom limits dialog" width="430">&nbsp;&nbsp;<img src="docs/images/fan-curves.png" alt="Fan curves dialog" width="430"></p>
+<p align="center"><em>Custom limits dialog (burst, short boost, sustained in plain words) and the firmware fan curves</em></p>
 
-<p align="center"><img src="docs/images/rogcontrol-general.png" alt="RogControl window, General" width="440">&nbsp;&nbsp;<img src="docs/images/rogcontrol-offline.png" alt="RogControl window without AsusWmi loaded" width="440"></p>
-<p align="center"><em>General, and the window when AsusWmi is not loaded</em></p>
+<p align="center"><img src="docs/images/rogcontrol-battery.png" alt="Battery dialog" width="430">&nbsp;&nbsp;<img src="docs/images/rogcontrol-lighting.png" alt="Slash animations dialog" width="430"></p>
+<p align="center"><em>Battery dialog (charge limit presets, health) and Slash animations</em></p>
+
+<p align="center"><img src="docs/images/rogcontrol-general.png" alt="Settings dialog" width="430">&nbsp;&nbsp;<img src="docs/images/rogcontrol-offline.png" alt="RogControl window without AsusWmi loaded" width="430"></p>
+<p align="center"><em>Settings, and the window when AsusWmi is not loaded</em></p>
 
 <p align="center"><img src="docs/images/rogcontrol-popover-offline.png" alt="RogControl menu bar panel without AsusWmi loaded" width="320"></p>
 <p align="center"><em>Panel when AsusWmi is not loaded: controls are off, nothing is guessed</em></p>
@@ -57,7 +60,7 @@ are untested; the power-limit ranges are the GA403WM's. Per-feature detail and t
 
 | Release | Contents |
 |---|---|
-| [rogcontrol-v0.2.1](https://github.com/thanhnndev/rog-control-macos/releases/tag/rogcontrol-v0.2.1) | `RogControl-0.2.1.dmg`: the redesigned app (ROG look, app icon); open it and drag the app into Applications. Kexts unchanged, still in `rog-v1.0` |
+| [rogcontrol-v0.3.0](https://github.com/thanhnndev/rog-control-macos/releases/tag/rogcontrol-v0.3.0) | `RogControl-0.3.0.dmg`: one-screen window with dialogs, steadier temperature and power readings; open it and drag the app into Applications. Kexts unchanged, still in `rog-v1.0` |
 | [rog-v1.0](https://github.com/thanhnndev/rog-control-macos/releases/tag/rog-v1.0) | `AsusWmi.kext`, `AmdCppc.kext`, `AmdCppcPolicy`, `RogControl.app`, `SHA256SUMS.txt`. Binaries copied unchanged from `kext-v1.1` of the EFI repo; same checksums |
 
 ## Build
