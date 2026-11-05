@@ -2180,8 +2180,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             host.sizingOptions = .preferredContentSize      // the window is exactly as tall as the content
             w.contentViewController = host
             w.delegate = self
+            // center at the real height: the content is ~785 pt, not the 600 pt placeholder, and a saved frame from an
+            // older layout put the window low on the screen
+            UserDefaults.standard.removeObject(forKey: "NSWindow Frame RogControl.MainWindow")
+            let fit = host.view.fittingSize
+            if fit.width > 0, fit.height > 0 { w.setContentSize(fit) }
             w.center()
-            w.setFrameAutosaveName("RogControl.MainWindow")
             window = w
         }
         NSApp.setActivationPolicy(.regular)
