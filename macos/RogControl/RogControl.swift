@@ -18,6 +18,7 @@ import SwiftUI
 import Charts
 import IOKit
 import IOKit.ps
+import IOKit.kext
 import CoreAudio
 import CoreMediaIO
 
@@ -33,6 +34,8 @@ struct AsusState {
     var batDesign = 0, batFull = 0, batNow = 0, batState = 0, batRate = 0   // mAh, mAh, mAh, _BST state, mA
     var kbd: Int? = nil, slash: Int? = nil, hid = false                   // ABI 3: keyboard light 0..3, Slash (packed), N-KEY seen
     var lighting = false                                                    // the kext has the keyboard / Slash settings
+    var abi: UInt32 = 0                                                     // AsusWmi's ABI version, 0 = not loaded
+    var aura: Int? = nil, hasAura = false                                   // ABI 5: keyboard Aura mode 0..2
 }
 
 // Slash lighting (asuswmi_abi.h ASUS_SLASH_*): mode index, brightness 0..3 (0 = off), interval 0..5
@@ -46,9 +49,9 @@ struct Slash: Equatable {
 }
 
 enum Asus {
-    static let abi: UInt32 = 4                                    // ABI 4 adds only the key selector; the state words are the same
+    static let abi: UInt32 = 5                                    // ABI 4 added the key selector, ABI 5 the Aura word and setting
     enum Sel: UInt32 { case state = 0, set = 1, fanRead = 2, fanWrite = 3, fanReset = 4 }
-    enum What: UInt64 { case profile = 1, spl = 2, sppt = 3, fppt = 4, charge = 5, backlight = 6, kbd = 7, slash = 8 }
+    enum What: UInt64 { case profile = 1, spl = 2, sppt = 3, fppt = 4, charge = 5, backlight = 6, kbd = 7, slash = 8, aura = 9 }
 
     static func open() -> io_connect_t? {
         let svc = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AsusWmi"))
@@ -78,11 +81,11 @@ enum Asus {
 
     static func state() -> AsusState {
         var s = AsusState()
-        let (kr, b) = call(.state, outCount: 27 * 4)
+        let (kr, b) = call(.state, outCount: 28 * 4)
         guard kr == KERN_SUCCESS, b.count >= 24 * 4 else { return s }
         func w(_ i: Int) -> UInt32 { b.withUnsafeBytes { $0.load(fromByteOffset: i * 4, as: UInt32.self) } }
         guard w(0) >= 1, w(0) <= abi else { return s }          // ABI 1 / 2 (fewer words) still work
-        s.present = true
+        s.present = true; s.abi = w(0)
         s.ac = w(1) & 1 != 0; s.fanCustom = w(1) & 2 != 0
         s.profile = w(2) == ~0 ? nil : Int(w(2)); s.charge = w(3) == ~0 ? nil : Int(w(3))
         s.cpuFan = Int(w(4)); s.gpuFan = Int(w(5))
@@ -96,6 +99,8 @@ enum Asus {
         guard w(0) >= 3, b.count >= 27 * 4 else { return s }
         s.lighting = true
         s.kbd = w(24) == ~0 ? nil : Int(w(24)); s.slash = w(25) == ~0 ? nil : Int(w(25)); s.hid = w(26) != 0
+        guard w(0) >= 5, b.count >= 28 * 4 else { return s }
+        s.hasAura = true; s.aura = w(27) == ~0 ? nil : Int(w(27))
         return s
     }
 
@@ -385,6 +390,9 @@ final class RogModel: ObservableObject {
     @Published var lightingError = ""
     @Published var sound = SoundState()
     @Published var soundError = ""
+    @Published var doctor: [DoctorCheck] = []
+    func runDoctor() { doctor = Doctor.run(self) }
+    private var doctorTick = 0
     struct Sample: Identifiable { let id: Int; let date: Date; let temp: Double; let watts: Double? }
     @Published var history: [Sample] = []
     private var sampleID = 0
@@ -486,6 +494,8 @@ final class RogModel: ObservableObject {
         lastAC = st.ac
         if previousMode != activeMode { loadCurve() }
         if !preview { sound = Sound.state() }
+        doctorTick += 1
+        if !preview, visible, doctorTick % 15 == 0 || doctor.isEmpty { runDoctor() }   // every 30 s while the window shows
         onChange?()
     }
 
@@ -536,6 +546,11 @@ final class RogModel: ObservableObject {
         kbd = v; UserDefaults.standard.set(v, forKey: "kbd")
         lightingError = Asus.set(.kbd, v) == KERN_SUCCESS ? "" : "Keyboard light was not applied. Check the keyboard connection."
         message = lightingError.isEmpty ? "keyboard light \(v)" : lightingError
+        st = Asus.state()
+    }
+    func setAura(_ v: Int) {
+        lightingError = Asus.set(.aura, v) == KERN_SUCCESS ? "" : "Aura mode was not applied. Check the keyboard connection."
+        message = lightingError.isEmpty ? "Aura \(LightingTile.auraModes[v])" : lightingError
         st = Asus.state()
     }
     func setSlash(_ s: Slash) {
@@ -1178,7 +1193,7 @@ struct LiveChart: View {
 // Anything that is set up once (Custom limits, fan curves, Slash animations, battery details, settings) opens as a dialog over
 // the screen instead of a page behind a side menu.
 enum RogDialog: String, Identifiable {
-    case limits, fans, slash, battery, settings
+    case limits, fans, slash, battery, settings, doctor
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -1187,9 +1202,10 @@ enum RogDialog: String, Identifiable {
         case .slash: return "Slash animations"
         case .battery: return "Battery"
         case .settings: return "Settings"
+        case .doctor: return "Doctor"
         }
     }
-    var width: CGFloat { self == .limits ? 820 : self == .slash ? 900 : self == .settings ? 560 : 680 }
+    var width: CGFloat { self == .limits ? 820 : self == .slash ? 900 : self == .settings ? 560 : self == .doctor ? 760 : 680 }
 }
 
 struct TileHead: View {           // tile title, with an opener for its dialog on the right
@@ -1215,6 +1231,7 @@ struct TileHead: View {           // tile title, with an opener for its dialog o
 }
 
 struct RogWindowView: View {
+    static let column: CGFloat = (1120 - 36 - 24) / 3          // window width less the side padding and two 12 pt gaps
     @ObservedObject var m: RogModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
@@ -1235,7 +1252,7 @@ struct RogWindowView: View {
             }
             .disabled(!m.st.present)
             HStack(alignment: .top, spacing: 12) {      // sound and camera do not need AsusWmi
-                SoundTile(m: m)
+                SoundTile(m: m).frame(width: Self.column * 2 + 12)   // on the 3-column grid of the row above
                 MicCameraTile(m: m)
             }
             .fixedSize(horizontal: false, vertical: true)
@@ -1266,12 +1283,28 @@ struct RogWindowView: View {
             Spacer()
             chip(dot: m.st.present ? .green : T.amber, m.st.present ? "AsusWmi connected" : "AsusWmi not loaded, controls are off until it loads through OpenCore")
             if m.st.present { chip(icon: m.st.ac ? "powerplug.fill" : "battery.75percent", m.st.ac ? "On charger" : "On battery") }
+            doctorButton
             Button { m.dialog = .settings } label: {
                 Image(systemName: "gearshape.fill").font(.system(size: 12)).foregroundStyle(T.dim).frame(width: 28, height: 26)
             }
             .buttonStyle(RogButtonStyle(cut: 6)).help("Settings").accessibilityLabel("Settings")
         }
         .frame(height: 28)
+    }
+    // Doctor: the worst result colours the icon, and the count of problems is spelled out next to it
+    var doctorButton: some View {
+        let issues = m.doctor.filter { $0.level >= .warn }
+        let worst = m.doctor.map(\.level).max() ?? .ok
+        return Button { m.runDoctor(); m.dialog = .doctor } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "stethoscope").font(.system(size: 11, weight: .semibold)).foregroundStyle(worst.color)
+                Text(m.doctor.isEmpty ? "Doctor" : issues.isEmpty ? "All good" : "\(issues.count) to fix").font(.system(size: 11))
+                    .foregroundStyle(issues.isEmpty ? T.dim : T.text)
+            }
+            .padding(.horizontal, 10).frame(height: 26)
+        }
+        .buttonStyle(RogButtonStyle(cut: 6)).help("Doctor: checks the drivers, Fn keys, audio and permissions")
+        .accessibilityLabel("Doctor").accessibilityValue(issues.isEmpty ? "No problems" : "\(issues.count) problems")
     }
     func chip(dot: Color? = nil, icon: String? = nil, _ text: String) -> some View {
         HStack(spacing: 6) {
@@ -1298,7 +1331,7 @@ struct LiveCard: View {
                     fan("CPU fan", m.st.cpuFan)
                     fan("GPU fan", m.st.gpuFan)
                     HStack(spacing: 18) {
-                        stat("Power limit", limitNow > 0 ? "\(limitNow) W" : "–")
+                        stat("Power limit", limitNow > 0 ? "\(limitNow) W" : "Profile")
                         stat("GPU", gpuMode)
                         stat("TGP", m.st.baseTgp > 0 ? "\(m.st.baseTgp) W" : "–")
                     }
@@ -1486,6 +1519,7 @@ struct LimitsTile: View {
 }
 
 struct LightingTile: View {
+    static let auraModes = ["Static", "Breathe", "Strobe"]       // the single-color keyboard's modes (AsusWmi kAuraModes)
     @ObservedObject var m: RogModel
     var slash: Slash { m.currentSlash }
     var body: some View {
@@ -1501,7 +1535,7 @@ struct LightingTile: View {
                         Text(slash.bright > 0 ? Slash.modes[min(slash.mode, Slash.modes.count - 1)] : "Off").font(T.num(18)).foregroundStyle(T.text)
                     }
                     Spacer()
-                    Toggle("Slash", isOn: slashOn(m)).toggleStyle(.switch).labelsHidden().tint(T.red).help("Fn+F4 turns it on and off")
+                    Toggle("Slash", isOn: slashOn(m)).toggleStyle(.switch).labelsHidden().tint(T.red)
                 }
                 .padding(.top, 8)
                 Spacer(minLength: 10)
@@ -1517,6 +1551,13 @@ struct LightingTile: View {
                     Pills(items: ["Off", "Low", "Med", "High"], selected: m.st.kbd, minWidth: 28, pad: 6, label: "Keyboard") { m.setKbd($0) }
                         .disabled(m.st.kbd == nil)
                         .help("Fn+F2 and Fn+F3 change it too")
+                }
+                .padding(.top, 8)
+                HStack {
+                    Text("Aura").font(.system(size: 12)).foregroundStyle(T.text); Spacer()
+                    Pills(items: Self.auraModes, selected: m.st.aura, minWidth: 28, pad: 6, label: "Aura mode") { m.setAura($0) }
+                        .disabled(!m.st.hasAura)
+                        .help(m.st.hasAura ? "Fn+F4 steps through them too" : "Needs AsusWmi 0.2.2 (ABI 5): restart after installing it")
                 }
                 .padding(.top, 8)
                 ErrorLine(text: m.lightingError).padding(.top, 6)
@@ -1540,9 +1581,9 @@ struct LightingTile: View {
 extension SoundState {
     var outputLine: String {
         guard let o = output else { return "No output device" }
-        if o.isRogSpeakers { return !daemon ? "rogaudiod is not running, no sound" : chain ? "Sound profile on" : "Starting the sound profile" }
-        if o.builtin { return rog ? "Direct to the speakers, profile bypassed" : "RogAudio is not installed" }
-        return "Profile applies to the built-in speakers only"
+        if o.isRogSpeakers { return !daemon ? "rogaudiod stopped, no sound" : chain ? "Sound profile on" : "Starting the profile" }
+        if o.builtin { return rog ? "Playing, no profile" : "RogAudio not installed" }
+        return "Playing, no profile"
     }
     var outputWarn: Bool { output?.isRogSpeakers == true && !daemon }
 }
@@ -1612,14 +1653,14 @@ struct OutputCard: View {
     var name: String { d.isRogSpeakers ? "ROG Speakers" : d.builtin ? "Built-in" : d.name }
     var note: String {
         if on { return s.outputLine }
-        return d.isRogSpeakers ? "With the sound profile" : d.builtin ? "Direct, no profile" : "External device"
+        return d.isRogSpeakers ? "With sound profile" : d.builtin ? "Direct, no profile" : "External"
     }
     var body: some View {
         Button(action: pick) {
             HStack(spacing: 10) {
                 Image(systemName: icon).font(.system(size: 15, weight: .medium)).foregroundStyle(on ? T.red : T.dim).frame(width: 22)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(name).font(.system(size: 13, weight: .semibold)).foregroundStyle(T.text).lineLimit(1)
+                    Text(name).font(.system(size: 13, weight: .semibold)).foregroundStyle(T.text).lineLimit(1).truncationMode(.middle)
                     Text(note).font(.system(size: 10.5)).foregroundStyle(on && s.outputWarn ? T.amber : T.dim).lineLimit(1)
                 }
                 Spacer(minLength: 0)
@@ -1641,8 +1682,7 @@ struct MicCameraTile: View {
     var s: SoundState { m.sound }
     var body: some View {
         Card(pad: 14, stretch: true) {
-            TileHead(title: "Microphone and camera")
-            HStack(spacing: 10) {
+            HStack(spacing: 10) {                     // each half carries its own label, so the tile has no title
                 state("Microphone", s.micMuted == nil ? "Not found" : s.micMuted == true ? "Muted" : s.micInUse ? "In use" : "Ready",
                       live: s.micInUse && s.micMuted != true)
                 Spacer()
@@ -1651,7 +1691,6 @@ struct MicCameraTile: View {
                 }
                 .disabled(s.micMuted == nil)
             }
-            .padding(.top, 8)
             HStack {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Clear Mic").font(.system(size: 12)).foregroundStyle(T.text)
@@ -1712,9 +1751,10 @@ struct DialogShell: View {
                     case .slash: SlashEditor(m: m)
                     case .battery: BatteryDetails(m: m)
                     case .settings: SettingsEditor(m: m)
+                    case .doctor: DoctorView(m: m)
                     }
                 }
-                .disabled(!m.st.present && kind != .settings)
+                .disabled(!m.st.present && kind != .settings && kind != .doctor)
             }
             .padding(20).frame(width: kind.width)
             .background(T.surface, in: Chamfer(cut: 16)).overlay(Chamfer(cut: 16).stroke(T.line))
@@ -2041,6 +2081,258 @@ struct SettingsEditor: View {
     }
 }
 
+// ---- Doctor: what ROG Control depends on, checked in one place ------------------------------------------------------------------
+struct DoctorCheck: Identifiable {
+    enum Level: Int, Comparable {
+        case ok, info, warn, fail
+        static func < (a: Level, b: Level) -> Bool { a.rawValue < b.rawValue }
+        var color: Color { self == .ok ? .green : self == .info ? T.dim : self == .warn ? T.amber : T.red }
+        var icon: String { self == .ok ? "checkmark.circle.fill" : self == .info ? "info.circle.fill" : self == .warn ? "exclamationmark.triangle.fill" : "xmark.octagon.fill" }
+        var word: String { self == .ok ? "OK" : self == .info ? "Info" : self == .warn ? "Check" : "Problem" }
+    }
+    struct Fix { let label: String; let run: @MainActor () -> Void }
+    let id = UUID()
+    let group: String, title: String, detail: String, level: Level
+    var fix: Fix? = nil
+}
+
+@MainActor
+enum Doctor {
+    static let groups = ["Driver", "Fn keys", "Audio", "Microphone and camera", "System"]
+    static let rogkeydID = "com.itlmt7925.rogkeyd", rogaudiodID = "com.itlmt7925.rogaudiod"
+
+    static func kextVersion(_ id: String) -> String? {
+        guard let info = KextManagerCopyLoadedKextInfo([id] as CFArray, ["CFBundleVersion"] as CFArray)?.takeRetainedValue() as? [String: Any],
+              let k = info[id] as? [String: Any] else { return nil }
+        return k["CFBundleVersion"] as? String
+    }
+    static func espAsusWmi() -> String? {
+        let url = URL(fileURLWithPath: "/Volumes/ESP/EFI/OC/Kexts/AsusWmi.kext/Contents/Info.plist")
+        guard let d = NSDictionary(contentsOf: url) else { return nil }
+        return d["CFBundleVersion"] as? String
+    }
+    static func pref(_ pane: String) -> Fix {
+        Fix(label: "Open Settings") { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)")!) }
+    }
+    static func kickstart(_ label: String, _ name: String) -> Fix {
+        Fix(label: "Restart \(name)") {
+            let p = Process(); p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+            p.arguments = ["kickstart", "-k", "gui/\(getuid())/\(label)"]; try? p.run()
+        }
+    }
+    typealias Fix = DoctorCheck.Fix
+    // a LaunchAgent with a PID: rogkeyd never starts NSApplication, so NSRunningApplication does not list it
+    static func agentRunning(_ label: String) -> Bool {
+        let p = Process(), out = Pipe()
+        p.executableURL = URL(fileURLWithPath: "/bin/launchctl"); p.arguments = ["list", label]
+        p.standardOutput = out; p.standardError = FileHandle.nullDevice
+        guard (try? p.run()) != nil else { return false }
+        p.waitUntilExit()
+        let t = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        return p.terminationStatus == 0 && t.contains("\"PID\" = ")
+    }
+    // rogkeyd's log since its last start: whether it reads the keyboard and has its event tap
+    static func rogkeydLog() -> (reading: Bool?, tap: Bool?) {
+        let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/rogkeyd.log")
+        guard let h = try? FileHandle(forReadingFrom: url) else { return (nil, nil) }
+        defer { try? h.close() }
+        let end = (try? h.seekToEnd()) ?? 0
+        try? h.seek(toOffset: end > 65536 ? end - 65536 : 0)
+        let text = String(decoding: h.readDataToEndOfFile(), as: UTF8.self)
+        var lines = text.split(separator: "\n").map(String.init)
+        if let i = lines.lastIndex(where: { $0.contains(" start: ") }) { lines = Array(lines[i...]) }
+        let open = lines.last { $0.contains(": open 0x") }
+        let reading = open.map { $0.contains("reading the N-KEY keyboard") }
+        let tapOn = lines.lastIndex { $0.contains("event tap on") }, tapOff = lines.lastIndex { $0.contains("no Accessibility access") }
+        let tap: Bool? = tapOn != nil ? (tapOff.map { $0 < tapOn! } ?? true) : tapOff != nil ? false : nil
+        return (reading, tap)
+    }
+    // kernel panics of the last 7 days, with the first non-Apple kext in the panicked backtrace
+    static func panics() -> [(date: Date, kext: String?, url: URL)] {
+        let dir = URL(fileURLWithPath: "/Library/Logs/DiagnosticReports")
+        let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+        let week = Date().addingTimeInterval(-7 * 86400)
+        return files.filter { $0.pathExtension == "panic" }.compactMap { u in
+            guard let d = (try? u.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate, d > week else { return nil }
+            let t = (try? String(contentsOf: u, encoding: .utf8)) ?? ""
+            var kext: String?
+            if let r = t.range(of: "Kernel Extensions in backtrace:") {
+                let after = t[r.upperBound...]
+                if let m = after.range(of: #"(?<![\w.])([a-z0-9-]+\.[\w.-]+)\("#, options: .regularExpression) {
+                    let id = String(after[m].dropLast())
+                    if !id.hasPrefix("com.apple.") { kext = id }
+                }
+            }
+            return (d, kext, u)
+        }.sorted { $0.date > $1.date }
+    }
+
+    static func run(_ m: RogModel) -> [DoctorCheck] {
+        var c: [DoctorCheck] = []
+        func add(_ g: String, _ t: String, _ d: String, _ l: DoctorCheck.Level, _ f: Fix? = nil) { c.append(DoctorCheck(group: g, title: t, detail: d, level: l, fix: f)) }
+        let st = m.st, snd = m.sound
+
+        // driver
+        let loaded = kextVersion("com.itlmt7925.asuswmi")
+        if !st.present {
+            add("Driver", "AsusWmi", loaded == nil ? "Not loaded. It loads at boot through OpenCore (EFI/OC/Kexts)." : "Loaded (\(loaded!)) but the app cannot open it.", .fail)
+        } else if st.abi < Asus.abi {
+            add("Driver", "AsusWmi \(loaded ?? "")", "Older interface (ABI \(st.abi), this app speaks \(Asus.abi)): Aura needs the newer driver. Restart after installing it.", .warn)
+        } else {
+            add("Driver", "AsusWmi \(loaded ?? "")", "Loaded, interface ABI \(st.abi).", .ok)
+        }
+        if let esp = espAsusWmi() {
+            if let l = loaded, l != esp { add("Driver", "Driver update waiting", "The ESP has AsusWmi \(esp), \(l) is running. Restart to load it.", .warn) }
+            else { add("Driver", "ESP copy", "EFI/OC/Kexts has the running version.", .ok) }
+        } else {
+            add("Driver", "ESP copy", "The EFI partition is not mounted, so the installed version was not compared.", .info)
+        }
+        add("Driver", "N-KEY keyboard", st.hid ? "Found (USB 0b05:19b6): keyboard light, Aura and Slash work." : "Not seen yet. It is found on the first lighting command.", st.hid ? .ok : .info)
+
+        // Fn keys
+        let keyd = agentRunning(rogkeydID)
+        let installed = FileManager.default.fileExists(atPath: FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/RogControl/rogkeyd.app").path)
+        if !installed { add("Fn keys", "rogkeyd", "Not installed: the Fn keys (except mute and volume) do nothing. Install with scripts/build-rogkeys.sh --install.", .fail) }
+        else if !keyd { add("Fn keys", "rogkeyd", "Installed but not running.", .fail, kickstart(rogkeydID, "rogkeyd")) }
+        else {
+            let log = rogkeydLog()
+            switch log.reading {
+            case true?: add("Fn keys", "Input Monitoring", "rogkeyd reads the N-KEY keyboard.", .ok)
+            case false?: add("Fn keys", "Input Monitoring", "rogkeyd has no access, so the Fn keys do nothing. In Input Monitoring remove rogkeyd (−), add it again (+), then restart it. A new rogkeyd build always needs this.",
+                             .fail, pref("Privacy_ListenEvent"))
+            case nil: add("Fn keys", "Input Monitoring", "rogkeyd has not reported yet.", .info)
+            }
+            if log.reading == false { add("Fn keys", "Restart rogkeyd", "After the grant, restart it so it opens the keyboard again.", .info, kickstart(rogkeydID, "rogkeyd")) }
+            switch log.tap {
+            case true?: add("Fn keys", "Accessibility (Fn+F9)", "Fn+F9 opens Displays and its Cmd+P is dropped. A Cmd+P you type still prints.", .ok)
+            case false?: add("Fn keys", "Accessibility (Fn+F9)", "Fn+F9 opens Displays, but its Cmd+P also reaches the app (Print dialog). Allow rogkeyd in Accessibility.", .warn, pref("Privacy_Accessibility"))
+            case nil: add("Fn keys", "Accessibility (Fn+F9)", "rogkeyd has not reported its event tap.", .info)
+            }
+        }
+        if st.present, let k = Sensors.hotkey() {
+            add("Fn keys", "Keys reaching AsusWmi", k.sequence == 0 ? "None since boot. Press Fn+F2 to test." : "\(k.sequence) since boot, last code \(String(format: "%02X", k.code)).", k.sequence == 0 ? .info : .ok)
+        }
+
+        // audio
+        let hda = kextVersion("cn.laobamac.SimpleHDA")
+        add("Audio", "SimpleHDA", hda.map { "Loaded (\($0)): the speakers and jack have a driver." } ?? "Not loaded: no built-in audio device.", hda == nil ? .fail : .ok)
+        if !snd.rog { add("Audio", "ROG Speakers", "Device missing: RogAudio.driver is not installed, the sound profile is off.", .warn) }
+        else if !snd.daemon { add("Audio", "rogaudiod", "Not running: ROG Speakers plays nothing.", .fail, kickstart(rogaudiodID, "rogaudiod")) }
+        else { add("Audio", "rogaudiod", snd.chain ? "Running, the sound profile is on." : "Running, speakers idle (it starts when ROG Speakers plays).", .ok) }
+        if let o = snd.output {
+            let rogOut = snd.outputs.first(where: \.isRogSpeakers)
+            add("Audio", "Output", o.isRogSpeakers ? "ROG Speakers." : "\(o.name): the sound profile only runs on ROG Speakers.", o.isRogSpeakers ? .ok : .info,
+                o.isRogSpeakers || rogOut == nil ? nil : Fix(label: "Use ROG Speakers") { m.setOutput(rogOut!) })
+        } else { add("Audio", "Output", "No output device.", .fail) }
+
+        // mic and camera
+        switch snd.micMuted {
+        case nil: add("Microphone and camera", "Microphone", "No built-in microphone found.", .warn)
+        case true?: add("Microphone and camera", "Microphone", "Muted (M3 or the switch in the window).", .info, Fix(label: "Unmute") { m.setMicMute(false) })
+        case false?: add("Microphone and camera", "Microphone", snd.clearMic ? "On, Clear Mic noise reduction on." : "On, Clear Mic off.", .ok)
+        }
+        add("Microphone and camera", "Camera", snd.camera.map { "\($0) found." } ?? "No camera found.", snd.camera == nil ? .warn : .ok)
+
+        // system
+        let p = panics()
+        if let last = p.first {
+            let f = DateFormatter(); f.dateStyle = .short; f.timeStyle = .short
+            let day = Date().timeIntervalSince(last.date) < 86400
+            add("System", "Kernel panics", "\(p.count) in 7 days, last \(f.string(from: last.date))\(last.kext.map { ", in \($0)" } ?? "").",
+                day ? .warn : .info, Fix(label: "Show") { NSWorkspace.shared.activateFileViewerSelecting([last.url]) })
+        } else { add("System", "Kernel panics", "None in 7 days.", .ok) }
+        if st.batDesign > 0 && st.batFull > 0 {
+            let h = Int((Double(st.batFull) / Double(st.batDesign) * 100).rounded())
+            add("System", "Battery health", "\(h) % of design (\(st.batFull) of \(st.batDesign) mAh).", h < 80 ? .warn : .ok)
+        }
+        add("System", "Open at login", m.loginEnabled ? "On: modes and limits come back after a restart." : "Off: after a restart the firmware defaults stay until you open the app.",
+            m.loginEnabled ? .ok : .warn, m.loginEnabled ? nil : Fix(label: "Turn on") { m.setLogin(true) })
+        return c
+    }
+    static func report(_ c: [DoctorCheck]) -> String {
+        var out = "ROG Control \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev") Doctor, \(Date())\n"
+        for g in groups {
+            let rows = c.filter { $0.group == g }
+            guard !rows.isEmpty else { continue }
+            out += "\n\(g)\n"
+            for r in rows { out += "  [\(r.level.word)] \(r.title): \(r.detail)\n" }
+        }
+        return out
+    }
+}
+
+struct DoctorView: View {
+    @ObservedObject var m: RogModel
+    @State private var copied = false
+    var issues: Int { m.doctor.filter { $0.level >= .warn }.count }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                Image(systemName: issues == 0 ? "checkmark.seal.fill" : "stethoscope").font(.system(size: 20))
+                    .foregroundStyle(issues == 0 ? Color.green : (m.doctor.map(\.level).max() ?? .ok).color)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(issues == 0 ? "Everything checks out" : issues == 1 ? "1 thing to fix" : "\(issues) things to fix")
+                        .font(.system(size: 14, weight: .semibold)).foregroundStyle(T.text)
+                    Text("\(m.doctor.count) checks: drivers, Fn keys, audio, microphone, camera and system").font(.system(size: 11)).foregroundStyle(T.dim)
+                }
+                Spacer()
+                Button { m.runDoctor() } label: { Label("Run again", systemImage: "arrow.clockwise").font(.system(size: 12)).padding(.horizontal, 10).frame(height: 28) }
+                    .buttonStyle(RogButtonStyle(cut: 6))
+                Button {
+                    NSPasteboard.general.clearContents(); NSPasteboard.general.setString(Doctor.report(m.doctor), forType: .string)
+                    copied = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+                } label: { Label(copied ? "Copied" : "Copy report", systemImage: copied ? "checkmark" : "doc.on.doc").font(.system(size: 12)).padding(.horizontal, 10).frame(height: 28) }
+                    .buttonStyle(RogButtonStyle(cut: 6))
+            }
+            .padding(.bottom, 14)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    ForEach(Doctor.groups, id: \.self) { g in
+                        let rows = m.doctor.filter { $0.group == g }
+                        if !rows.isEmpty {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Caps(g)
+                                VStack(spacing: 0) {
+                                    ForEach(Array(rows.enumerated()), id: \.element.id) { i, r in
+                                        row(r)
+                                        if i < rows.count - 1 { Rectangle().fill(T.line).frame(height: 1) }
+                                    }
+                                }
+                                .background(T.raised, in: Chamfer(cut: 8))
+                            }
+                        }
+                    }
+                }
+            }
+            .frame(maxHeight: 520)
+        }
+        .onAppear { if m.doctor.isEmpty { m.runDoctor() } }
+    }
+    func row(_ r: DoctorCheck) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: r.level.icon).font(.system(size: 13)).foregroundStyle(r.level.color).frame(width: 18).padding(.top, 1)
+                .accessibilityLabel(r.level.word)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(r.title).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(T.text)
+                Text(r.detail).font(.system(size: 11)).foregroundStyle(T.dim).fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            if let f = r.fix {
+                Button { f.run(); DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { m.runDoctor() } } label: {
+                    Text(f.label).font(.system(size: 11.5, weight: .medium)).padding(.horizontal, 10).frame(height: 26)
+                        .background(r.level >= .warn ? Color.clear : T.surface, in: Chamfer(cut: 6))
+                        .overlay(Chamfer(cut: 6).stroke(r.level >= .warn ? Color.clear : T.line))
+                }
+                .buttonStyle(RogButtonStyle(selected: r.level >= .warn, cut: 6))
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 10)
+        .accessibilityElement(children: .combine)
+    }
+}
+
 // ---- status item -------------------------------------------------------------------------------------------------------------
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSWindowDelegate {
@@ -2295,17 +2587,26 @@ enum Snapshot {
         host.cacheDisplay(in: host.bounds, to: rep)
         try? rep.representation(using: .png, properties: [:])?.write(to: url)
     }
-    static func run(dir: String, manual: Bool, offline: Bool) {
+    // live = this machine's real readings (read only: nothing is applied), to review the layout with real values
+    static func live() -> RogModel {
+        let s = Sensors.read()
+        let m = RogModel(preview: Asus.state(), tctl: s.tctl, watts: s.watts, curve: nil, gpuCurve: nil)
+        m.sound = Sound.state()
+        m.seedHistory()
+        return m
+    }
+    static func run(dir: String, manual: Bool, offline: Bool, live: Bool = false) {
         _ = NSApplication.shared
         NSApp.setActivationPolicy(.prohibited)
         let out = URL(fileURLWithPath: dir); try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
-        let m = mock(manual: manual, offline: offline)
-        let tag = offline ? "-offline" : manual ? "-manual" : ""
+        let m = live ? Self.live() : mock(manual: manual, offline: offline)
+        m.runDoctor()
+        let tag = live ? "-live" : offline ? "-offline" : manual ? "-manual" : ""
         render(ContentView(m: m, openWindow: { _ in }), size: NSSize(width: 320, height: 0), dark: true,
                to: out.appendingPathComponent("popover\(tag).png"))
         // the window is always dark: the main screen, then each dialog over it
         let shots: [(String, RogDialog?)] = [("1-main", nil), ("2-limits", .limits), ("3-fans", .fans), ("4-slash", .slash),
-                                             ("5-battery", .battery), ("6-settings", .settings)]
+                                             ("5-battery", .battery), ("6-settings", .settings), ("7-doctor", .doctor)]
         for (name, d) in shots {
             m.dialog = d
             render(RogWindowView(m: m), size: NSSize(width: 1120, height: 0), dark: true,
@@ -2379,7 +2680,7 @@ func bench(seconds: Int) -> Int32 {
 
 let args = CommandLine.arguments
 if args.count >= 3 && args[1] == "--snapshot" {
-    MainActor.assumeIsolated { Snapshot.run(dir: args[2], manual: args.contains("--manual"), offline: args.contains("--offline")) }
+    MainActor.assumeIsolated { Snapshot.run(dir: args[2], manual: args.contains("--manual"), offline: args.contains("--offline"), live: args.contains("--live")) }
     exit(0)
 }
 if args.count >= 2 && args[1] == "--bench" {

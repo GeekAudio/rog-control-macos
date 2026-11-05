@@ -571,6 +571,8 @@ IOReturn AsusWmi::setValue(int what, int v)
         return kbdSet(v);
     case ASUS_SET_SLASH:
         return v < 0 ? kIOReturnBadArgument : slashApply((uint32_t)v);
+    case ASUS_SET_AURA:
+        return auraSet(v);
     default:
         return kIOReturnUnsupported;
     }
@@ -661,6 +663,7 @@ void AsusWmi::getState(uint32_t st[ASUS_ST_COUNT])
     st[ASUS_ST_KBD] = kbdLevel >= 0 ? (uint32_t)kbdLevel : ~0u;
     st[ASUS_ST_SLASH] = slashSet >= 0 ? (uint32_t)slashSet : ~0u;
     st[ASUS_ST_HID] = hidSeen ? 1 : 0;
+    st[ASUS_ST_AURA] = auraMode >= 0 ? (uint32_t)auraMode : ~0u;
 }
 
 // getACPITableData() is protected; this type is never instantiated, it only makes the (virtual) call reachable.
@@ -732,13 +735,14 @@ IOReturn AsusWmiUC::externalMethod(uint32_t selector, IOExternalMethodArguments 
     IOReturn r;
     switch (selector) {
     case kAsusUcGetState: {
-        if (!a->structureOutput || a->structureOutputSize < ASUS_ST_COUNT * sizeof(uint32_t)) return kIOReturnBadArgument;
+        if (!a->structureOutput || a->structureOutputSize < ASUS_ST_COUNT_V3 * sizeof(uint32_t)) return kIOReturnBadArgument;
         uint32_t st[ASUS_ST_COUNT];
         IOLockLock(drv->lock);
         drv->getState(st);
         IOLockUnlock(drv->lock);
-        memcpy(a->structureOutput, st, sizeof(st));
-        a->structureOutputSize = sizeof(st);
+        uint32_t n = a->structureOutputSize < sizeof(st) ? a->structureOutputSize : (uint32_t)sizeof(st);   // older clients: fewer words
+        memcpy(a->structureOutput, st, n);
+        a->structureOutputSize = n;
         return kIOReturnSuccess;
     }
     case kAsusUcSet:
@@ -853,6 +857,7 @@ static int write_sysctl SYSCTL_HANDLER_ARGS
     else if (what == W_FAN_CUSTOM) v = gSelf->fanCustom;
     else if (what == ASUS_SET_KBD) v = gSelf->kbdLevel;
     else if (what == ASUS_SET_SLASH) v = (int)gSelf->slashSet;
+    else if (what == ASUS_SET_AURA) v = gSelf->auraMode;
     else if (what == W_KEY) v = (int)gSelf->lastKey;
     IOLockUnlock(gSelf->lock);
     int e = sysctl_handle_int(oidp, &v, 0, req);
@@ -918,6 +923,7 @@ SYSCTL_PROC(_debug_asuswmi, OID_AUTO, backlight, CTLTYPE_INT | CTLFLAG_RW | CTLF
 SYSCTL_PROC(_debug_asuswmi, OID_AUTO, battery, CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_LOCKED, nullptr, 0, battery_sysctl, "A", "");
 SYSCTL_PROC(_debug_asuswmi, OID_AUTO, ec_reg, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, nullptr, W_EC_REG, write_sysctl, "I", "");
 SYSCTL_PROC(_debug_asuswmi, OID_AUTO, kbd, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, nullptr, ASUS_SET_KBD, write_sysctl, "I", "");
+SYSCTL_PROC(_debug_asuswmi, OID_AUTO, aura, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, nullptr, ASUS_SET_AURA, write_sysctl, "I", "");
 SYSCTL_PROC(_debug_asuswmi, OID_AUTO, slash, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, nullptr, ASUS_SET_SLASH, write_sysctl, "I", "");
 SYSCTL_PROC(_debug_asuswmi, OID_AUTO, key, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, nullptr, W_KEY, write_sysctl, "I", "");
 
@@ -926,7 +932,7 @@ static struct sysctl_oid *const kOids[] = {
     &sysctl__debug_asuswmi_ppt_spl, &sysctl__debug_asuswmi_ppt_sppt, &sysctl__debug_asuswmi_ppt_fppt,
     &sysctl__debug_asuswmi_charge_limit, &sysctl__debug_asuswmi_dumpacpi, &sysctl__debug_asuswmi_probe,
     &sysctl__debug_asuswmi_backlight, &sysctl__debug_asuswmi_battery, &sysctl__debug_asuswmi_ec_reg,
-    &sysctl__debug_asuswmi_kbd, &sysctl__debug_asuswmi_slash, &sysctl__debug_asuswmi_key,
+    &sysctl__debug_asuswmi_kbd, &sysctl__debug_asuswmi_aura, &sysctl__debug_asuswmi_slash, &sysctl__debug_asuswmi_key,
 };
 
 bool AsusWmi::start(IOService *provider)
