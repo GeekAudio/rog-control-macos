@@ -35,9 +35,12 @@
 //   sysctl debug.asuswmi.slash[=<packed>]  Slash lighting, ASUS_SLASH_PACK(mode, brightness 0..3, interval 0..5) (report 0x5D)
 //   sysctl debug.asuswmi.key=<code>        emulates a hotkey through WMNB DEVS 0x00100021 (EC0.SKEY): 0x20 brightness up,
 //                                          0x10 down, 0xC4 / 0xC5 keyboard light up / down, 0xAE fan key (testing)
-// Hotkeys: the EC queues a code with ATKD.IANE and sends Notify (ATKD, 0xFF); _WED (0xFF) returns the queued codes. Handled
-// here: 0xC4 / 0xC5 keyboard light up / down (Fn+F3 / F2), 0xAE (Fn+F5) next profile, 0xB3 (Fn+F4) Slash on / off; every
-// code is logged in asus-log ("key xx").
+// Hotkeys: on the GA403WM every Fn key comes from the N-KEY keyboard as HID input report 0x5A (see AsusNKey.kext, which
+// drives that keyboard and hands the code over with callPlatformFunction("asusNKeyCode")); the ATKD path (Notify (ATKD,
+// 0xFF), codes from _WED) stays for other models. Handled here: 0xC4 / 0xC5 keyboard light up / down (Fn+F3 / F2), 0xAE
+// (Fn+F5) next profile, 0xB3 (Fn+F4) Slash on / off, 0x6C (Fn+F11) sleep. Every code is logged in asus-log ("key xx") and
+// counted for RogControl, which acts on the rest (0x7C mic mute, 0x38 M4, 0x6B touchpad, 0x88 Fn+F12 radio):
+//   sysctl debug.asuswmi.hotkey            (read) "<sequence> <last code>"
 //   sysctl debug.asuswmi.battery           ECOK, _BIF and _BST of BAT1 as the firmware returns them
 //   sysctl debug.asuswmi.ec_reg=1          runs EC0._REG (3, 1) (EmbeddedControl space available) if ECOK is still 0
 //   sysctl debug.asuswmi.dumpacpi=1        publishes the DSDT and SSDTs as registry properties acpi-DSDT, acpi-SSDT-<n>
@@ -49,6 +52,7 @@
 #include <IOKit/acpi/IOACPIPlatformExpert.h>
 #include <IOKit/IOBufferMemoryDescriptor.h>
 #include <IOKit/hid/IOHIDDevice.h>
+#include <IOKit/pwr_mgt/RootDomain.h>
 #include <kern/thread_call.h>
 #include <sys/sysctl.h>
 #include <stdarg.h>
@@ -142,7 +146,16 @@ public:
     // hotkeys: Notify (ATKD, 0xFF), codes from _WED (0xFF), handled on a thread call
     IONotifier *atkNotifier = nullptr;
     thread_call_t evCall = nullptr;
-    uint32_t lastKey = 0;
+    uint32_t lastKey = 0, keySequence = 0;
+    // codes from AsusNKey: queued from its report path (which may not block), handled on keyCall with `lock` held
+    thread_call_t keyCall = nullptr;
+    IOSimpleLock *keyQLock = nullptr;
+    uint8_t keyQ[16];
+    unsigned keyQHead = 0, keyQTail = 0;
+    void keyQueue(uint32_t code);
+    void keyDrain();
+    IOReturn callPlatformFunction(const OSSymbol *functionName, bool waitForFunction, void *p1, void *p2, void *p3,
+                                  void *p4) override;
     void events();
     void hotkey(uint32_t code);
     bool battery(uint32_t out[4], char *txt, size_t txtLen);
@@ -382,6 +395,7 @@ IOReturn AsusWmi::slashApply(uint32_t v)
 void AsusWmi::hotkey(uint32_t code)
 {
     lastKey = code;
+    keySequence++;
     say("key %02x", code);
     switch (code) {
     case 0xC4: kbdSet(kbdLevel < 0 ? 1 : (kbdLevel < 3 ? kbdLevel + 1 : 3)); break;     // Fn+F3
@@ -392,8 +406,44 @@ void AsusWmi::hotkey(uint32_t code)
         slashApply(ASUS_SLASH_PACK(ASUS_SLASH_MODE(s), ASUS_SLASH_BRIGHT(s) ? 0 : 2, ASUS_SLASH_INTERVAL(s)));
         break;
     }
-    default: break;
+    case 0x6C:                                                                           // Fn+F11: sleep
+        if (IOPMrootDomain *pm = getPMRootDomain()) pm->receivePowerNotification(kIOPMSleepNow);
+        break;
+    default: break;                                                                      // RogControl reads the rest
     }
+}
+
+void AsusWmi::keyQueue(uint32_t code)
+{
+    if (!keyQLock || !keyCall || code == 0 || code > 0xFF) return;
+    IOSimpleLockLock(keyQLock);
+    unsigned next = (keyQHead + 1) % sizeof(keyQ);
+    if (next != keyQTail) { keyQ[keyQHead] = (uint8_t)code; keyQHead = next; }   // full: drop the newest
+    IOSimpleLockUnlock(keyQLock);
+    thread_call_enter(keyCall);
+}
+
+void AsusWmi::keyDrain()
+{
+    for (;;) {
+        IOSimpleLockLock(keyQLock);
+        bool empty = keyQHead == keyQTail;
+        uint8_t code = empty ? 0 : keyQ[keyQTail];
+        if (!empty) keyQTail = (keyQTail + 1) % sizeof(keyQ);
+        IOSimpleLockUnlock(keyQLock);
+        if (empty) return;
+        IOLockLock(lock);
+        hotkey(code);
+        IOLockUnlock(lock);
+    }
+}
+
+static void keyThread(thread_call_param_t p0, thread_call_param_t) { ((AsusWmi *)p0)->keyDrain(); }
+
+IOReturn AsusWmi::callPlatformFunction(const OSSymbol *functionName, bool waitForFunction, void *p1, void *p2, void *p3, void *p4)
+{
+    if (functionName && functionName->isEqualTo("asusNKeyCode")) { keyQueue((uint32_t)(uintptr_t)p1); return kIOReturnSuccess; }
+    return IOService::callPlatformFunction(functionName, waitForFunction, p1, p2, p3, p4);
 }
 
 void AsusWmi::events()
@@ -750,6 +800,16 @@ static int status_sysctl SYSCTL_HANDLER_ARGS
     return e;
 }
 
+static int hotkey_sysctl SYSCTL_HANDLER_ARGS
+{
+    if (!gSelf) return ENODEV;
+    char value[48];
+    IOLockLock(gSelf->lock);
+    snprintf(value, sizeof(value), "%u %u", gSelf->keySequence, gSelf->lastKey);
+    IOLockUnlock(gSelf->lock);
+    return SYSCTL_OUT(req, value, strlen(value) + 1);
+}
+
 enum { W_DUMP = 100, W_FAN_CUSTOM = 101, W_EC_REG = 102, W_KEY = 103 };
 
 static int write_sysctl SYSCTL_HANDLER_ARGS
@@ -818,6 +878,7 @@ static int battery_sysctl SYSCTL_HANDLER_ARGS
 
 SYSCTL_NODE(_debug, OID_AUTO, asuswmi, CTLFLAG_RW | CTLFLAG_LOCKED, 0, "AsusWmi");
 SYSCTL_PROC(_debug_asuswmi, OID_AUTO, status, CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_LOCKED, nullptr, 0, status_sysctl, "A", "");
+SYSCTL_PROC(_debug_asuswmi, OID_AUTO, hotkey, CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_LOCKED, nullptr, 0, hotkey_sysctl, "A", "sequence and last hotkey code");
 SYSCTL_PROC(_debug_asuswmi, OID_AUTO, profile, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, nullptr, ASUS_SET_PROFILE, write_sysctl, "I", "");
 SYSCTL_PROC(_debug_asuswmi, OID_AUTO, fan_custom, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, nullptr, W_FAN_CUSTOM, write_sysctl, "I", "");
 SYSCTL_PROC(_debug_asuswmi, OID_AUTO, ppt_spl, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, nullptr, ASUS_SET_SPL, write_sysctl, "I", "");
@@ -834,7 +895,7 @@ SYSCTL_PROC(_debug_asuswmi, OID_AUTO, slash, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_
 SYSCTL_PROC(_debug_asuswmi, OID_AUTO, key, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, nullptr, W_KEY, write_sysctl, "I", "");
 
 static struct sysctl_oid *const kOids[] = {
-    &sysctl__debug_asuswmi, &sysctl__debug_asuswmi_status, &sysctl__debug_asuswmi_profile, &sysctl__debug_asuswmi_fan_custom,
+    &sysctl__debug_asuswmi, &sysctl__debug_asuswmi_status, &sysctl__debug_asuswmi_hotkey, &sysctl__debug_asuswmi_profile, &sysctl__debug_asuswmi_fan_custom,
     &sysctl__debug_asuswmi_ppt_spl, &sysctl__debug_asuswmi_ppt_sppt, &sysctl__debug_asuswmi_ppt_fppt,
     &sysctl__debug_asuswmi_charge_limit, &sysctl__debug_asuswmi_dumpacpi, &sysctl__debug_asuswmi_probe,
     &sysctl__debug_asuswmi_backlight, &sysctl__debug_asuswmi_battery, &sysctl__debug_asuswmi_ec_reg,
@@ -857,6 +918,8 @@ bool AsusWmi::start(IOService *provider)
     evCall = thread_call_allocate(evThread, this);
     if (evCall) atkNotifier = atk->registerInterest(gIOGeneralInterest, atkNotify, this);
     say("hotkeys %s", atkNotifier ? "hooked" : "not hooked");
+    keyQLock = IOSimpleLockAlloc();
+    keyCall = keyQLock ? thread_call_allocate(keyThread, this) : nullptr;
     char bt[256];
     uint32_t b4[4];
     battery(b4, bt, sizeof(bt));
@@ -873,6 +936,8 @@ void AsusWmi::stop(IOService *provider)
     for (int i = (int)(sizeof(kOids) / sizeof(kOids[0])) - 1; i >= 0; i--) sysctl_unregister_oid(kOids[i]);
     if (atkNotifier) { atkNotifier->remove(); atkNotifier = nullptr; }
     if (evCall) { thread_call_cancel_wait(evCall); thread_call_free(evCall); evCall = nullptr; }
+    if (keyCall) { thread_call_cancel_wait(keyCall); thread_call_free(keyCall); keyCall = nullptr; }
+    if (keyQLock) { IOSimpleLockFree(keyQLock); keyQLock = nullptr; }
     gSelf = nullptr;
     if (acad) { acad->release(); acad = nullptr; }
     if (awmi) { awmi->release(); awmi = nullptr; }
