@@ -32,3 +32,44 @@ so neither kext links against the other. AsusWmi handles the codes and counts th
 Undo: boot-arg `-asusnkeyoff` (Apple's driver keeps the keyboard), or disable the AsusNKey Kernel>Add entry.
 Check after boot: `ioreg -rc AsusNKey -d1`, then press a key and read `ioreg -rc AsusNKey -l | grep AsusNKeyLast` and
 `sysctl debug.asuswmi.hotkey`.
+
+## Black screen with AsusNKey 0.1.0 (2026-11-05 17:37 and 17:39 boots, traced from Windows)
+
+AsusNKey 0.1.0 was injected from the ESP (Kernel>Add) for the first time on the 17:37:57 boot. That boot and the 17:39:31 boot
+stayed black. **WindowServer crash-loops** as soon as it enumerates HID devices.
+
+- Crash: `WindowServer-2026-11-05-173821.ips` and `.000.ips` (same boot, uptime 13 s and 16 s): `EXC_BAD_ACCESS` at 0,
+  `_platform_strlen` with `rdi = 0`, called from SkyLight `device_set_create_dictionary` → `announce_device_set` →
+  `CGXHIDServicesAddCallback`. WindowServer reads a C string from a new HID service, and that string is NULL.
+- Restarts: good boots have one WindowServer (pid 205). Each bad boot has 6-7 (launchd respawns it): 710, 966, 1175, 1475…
+  in the first boot and 689, 915, 1098, 1375, 1720… in the second.
+- Service: hidd's descriptions in the unified log (Persist tracev3, after LZ4-decompressing the chunks):
+  - good boot: `IOHIDService name:AppleUserHIDEventDriver ... primaryUsagePage:0xff89 primaryUsage:0x10 transport:USB locationID:4194304`
+  - bad boot: the same interface as `name:AsusNKey ... primaryUsagePage:0xff89 primaryUsage:0x10 transport:USB locationID:4194304`.
+    It also shows up as `name:AsusNKey ... primaryUsagePage:0x0 primaryUsage:0x0 transport: locationID:(null)`, next to
+    `KeyboardBacklightServiceFilter`. An Apple service never shows empty `transport` or `(null)` `locationID`.
+- So the AsusNKey service is visible to clients before (or without) the string properties that Apple's dext has. The exact
+  key WindowServer reads could not be confirmed from Windows: the E: volume is the Data volume, with no dyld shared cache to
+  disassemble SkyLight.
+
+**Now:** the AsusNKey Kernel>Add entry is `Enabled = false` on the ESP (backup
+`EFI/OC/config.plist.pre-asusnkey-off-20261105-180109`). Apple's dext keeps the keyboard; the 0x5A Fn keys do nothing.
+
+### To trace on macOS (before turning AsusNKey back on)
+1. Properties Apple's dext puts on the keyboard service (the list AsusNKey must match):
+   `ioreg -rc AppleUserHIDEventDriver -l -w0 > ~/nkey-apple.txt` (the entry with `LocationID = 4194304`, `ProductID = 6582`).
+   Note `Transport`, `Product`, `Manufacturer`, `SerialNumber`, `LocationID`, `CountryCode`, `PrimaryUsagePage`,
+   `DeviceUsagePairs`, `HIDServiceSupport`, `HIDDefaultBehavior`, `KeyboardLanguage`.
+2. The crash site: `otool -tvV` on SkyLight is not possible (shared cache). Use `lldb` on a copy:
+   `dyld_info -disassemble -start device_set_create_dictionary /System/Library/PrivateFrameworks/SkyLight.framework/SkyLight`
+   (or `ipsw dyld disass`), and find which `IOHIDServiceClientCopyProperty` key feeds the `strlen`.
+3. Load test without a reboot loop: keep the Kernel>Add entry off and load a fixed build with `kextutil` from a terminal
+   over SSH, so a WindowServer crash only costs a re-login. Watch `log stream --predicate 'process == "WindowServer"'`.
+
+### Fix ideas for 0.1.1
+- In `start()`, before `IOHIDEventDriver::start(provider)`, copy `Transport`, `Product`, `Manufacturer`, `SerialNumber`,
+  `LocationID`, `VendorID`, `ProductID`, `CountryCode` from the `IOHIDInterface`/`IOHIDDevice` onto `this`, so the
+  service is complete when `registerService()` publishes it.
+- Match only the vendor interface that carries report 0x5A, not the whole keyboard, with a lower `IOProbeScore`.
+- Alternative with no driver swap: leave the keyboard to Apple's dext and read report 0x5A from user space
+  (IOHIDManager in rogaudiod/RogControl, which already worked in the key trace), then pass codes to AsusWmi through sysctl.
