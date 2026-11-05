@@ -4,7 +4,7 @@
 # Builds the kexts of this repo on macOS without an Xcode project. Needs the Xcode command line tools.
 # Kernel headers/libs come from acidanthera/MacKernelSDK (cloned into build/ on first use, or set MACKERNELSDK).
 #
-#   scripts/build.sh            build AsusWmi, AsusNKey and AmdCppc into build/*.kext
+#   scripts/build.sh            build AsusWmi and AmdCppc into build/*.kext
 #   scripts/build.sh AsusWmi    build only the named kext(s)
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -53,6 +53,5 @@ want() { local n="$1"; shift; [ $# -eq 0 ] && return 0; for a in "$@"; do [ "$a"
 TARGETS=("$@")
 
 want AsusWmi "${TARGETS[@]+"${TARGETS[@]}"}" && build_kext AsusWmi kexts/AsusWmi kmod_info.c AsusWmi.cpp
-want AsusNKey "${TARGETS[@]+"${TARGETS[@]}"}" && build_kext AsusNKey kexts/AsusNKey kmod_info.c AsusNKey.cpp
 want AmdCppc "${TARGETS[@]+"${TARGETS[@]}"}" && build_kext AmdCppc kexts/AmdCppc kmod_info.c AmdCppc.cpp
 exit 0

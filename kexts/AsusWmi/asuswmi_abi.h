@@ -5,7 +5,7 @@
 #ifndef ASUSWMI_ABI_H
 #define ASUSWMI_ABI_H
 
-#define ASUSWMI_ABI_VERSION 3
+#define ASUSWMI_ABI_VERSION 4
 
 enum {
     kAsusUcGetState  = 0,   // out: struct, uint32_t[ASUS_ST_COUNT]
@@ -14,6 +14,8 @@ enum {
                             //     (8 temperatures in °C, then 8 fan duties in %): the firmware's curve for that profile
     kAsusUcFanWrite  = 3,   // in: scalars { fan }, struct 16 bytes (same layout): custom curve, makes the fans "manual"
     kAsusUcFanReset  = 4,   // re-applies the current profile: firmware fan curves, power limits back to the profile's
+    kAsusUcKey       = 5,   // in: scalars { code }: an Fn key code from the N-KEY keyboard (HID report 0x5A), read by rogkeyd
+                            //     (ABI 4); handled as a hotkey, see AsusWmi.cpp
 };
 
 enum {                      // kAsusUcSet "what"

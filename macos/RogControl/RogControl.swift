@@ -20,7 +20,6 @@ import IOKit
 import IOKit.ps
 import CoreAudio
 import CoreMediaIO
-import CoreWLAN
 
 // ---- driver access (asuswmi_abi.h) -----------------------------------------------------------------------------------------
 struct AsusState {
@@ -118,7 +117,7 @@ enum Sensors {
         guard sysctlbyname(name, &buf, &len, nil, 0) == 0 else { return nil }
         return String(cString: buf)
     }
-    // "<sequence> <code>" of the last Fn key AsusWmi saw (codes from the N-KEY keyboard, AsusNKey.kext)
+    // "<sequence> <code>" of the last Fn key AsusWmi saw (codes from the N-KEY keyboard, passed in by rogkeyd)
     static func hotkey() -> (sequence: UInt32, code: UInt32)? {
         guard let v = string("debug.asuswmi.hotkey") else { return nil }
         let p = v.split(separator: " ")
@@ -2077,31 +2076,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         if !CommandLine.arguments.contains("--background") { showWindow() }
     }
 
-    // Fn keys the kernel leaves to the app: the kext handles keyboard light, Slash, profile, brightness and sleep itself
+    // Fn keys: rogkeyd reads them and AsusWmi applies keyboard light, Slash and profile; refresh when the count moves
     private var hotkeyTimer: Timer?
     private var hotkeySeq: UInt32?
     func startHotkeys() {
         hotkeySeq = Sensors.hotkey()?.sequence
-        hotkeyTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
+        hotkeyTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, let k = Sensors.hotkey(), k.sequence != self.hotkeySeq else { return }
-                let first = self.hotkeySeq == nil
                 self.hotkeySeq = k.sequence
-                if !first { self.hotkey(k.code) }
+                self.model.refresh()
             }
         }
-    }
-    func hotkey(_ code: UInt32) {
-        switch code {
-        case 0x7C:                                                   // M3: microphone mute
-            let muted = Sound.builtinInput().flatMap(Sound.mute) ?? false
-            model.setMicMute(!muted)
-        case 0x38: showWindow()                                      // M4: ROG Control
-        case 0x88:                                                   // Fn+F12: Wi-Fi on / off
-            if let wifi = CWWiFiClient.shared().interface() { try? wifi.setPower(!wifi.powerOn()) }
-        default: break                                               // 0x6B touchpad: no driver switch yet
-        }
-        model.refresh()                                              // keyboard light, Slash, profile changed in the kext
     }
 
     @objc func toggle() {

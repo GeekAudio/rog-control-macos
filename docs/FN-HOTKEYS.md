@@ -12,26 +12,30 @@ for all keys. The keyboard sends them in two ways.
 | Fn+F4 | 5A b3 | AsusWmi: Slash on / off |
 | Fn+F5 | 5A ae | AsusWmi: next profile |
 | Fn+F6 | keyboard Win+Shift+S | macOS (arrives as Cmd+Shift+S) |
-| Fn+F7 / F8 | 5A 10 / 5A 20 | AsusNKey: Apple brightness down / up |
+| Fn+F7 / F8 | 5A 10 / 5A 20 | AsusWmi: Notify (VGA.LCD, 0x87 / 0x86) to BrightnessKeys |
 | Fn+F9 | keyboard Win+P | macOS (arrives as Cmd+P) |
 | Fn+F10 | 5A 6b | nothing yet (no touchpad switch in VoodooI2C) |
 | Fn+F11 | 5A 6c | AsusWmi: sleep |
-| Fn+F12 | report 03 | RogControl: Wi-Fi on / off (code 0x88) |
+| Fn+F12 | report 03 | rogkeyd: Wi-Fi on / off (code 0x88) |
 | M1 / M2 | consumer Vol- / Vol+ (02 ea / 02 e9) | macOS |
-| M3 | 5A 7c | RogControl: built-in mic mute |
-| M4 | 5A 38 | RogControl: opens the window |
+| M3 | 5A 7c | rogkeyd: built-in mic mute |
+| M4 | 5A 38 | rogkeyd: opens ROG Control |
 
 Release is `5A 00`. Report 0x5A (usage page 0xFF31) needs no init: the keyboard sends it from power-on.
 
-macOS's keyboard driver (the AppleUserHIDEventService dext) drops page 0xFF31. AsusNKey.kext replaces that driver for this
-one keyboard. It is Apple's kernel `IOHIDEventDriver` (the class behind the "HID Keyboard Driver" personality) and passes every
-report on unchanged, but it reads report 0x5A first. It hands codes to AsusWmi with `callPlatformFunction("asusNKeyCode")`,
-so neither kext links against the other. AsusWmi handles the codes and counts them in `sysctl debug.asuswmi.hotkey`
-(`<sequence> <code>`); RogControl polls that for M3, M4 and Fn+F12.
+macOS's keyboard driver (the AppleUserHIDEventService dext) drops page 0xFF31, and the keyboard has to stay on that driver
+(see the AsusNKey section below). So the keys are read next to it:
 
-Undo: boot-arg `-asusnkeyoff` (Apple's driver keeps the keyboard), or disable the AsusNKey Kernel>Add entry.
-Check after boot: `ioreg -rc AsusNKey -d1`, then press a key and read `ioreg -rc AsusNKey -l | grep AsusNKeyLast` and
-`sysctl debug.asuswmi.hotkey`.
+- **rogkeyd** (`macos/RogKeys`, LaunchAgent `com.itlmt7925.rogkeyd`, `scripts/build-rogkeys.sh --install`) opens the
+  keyboard with IOHIDManager and reads reports 0x5A and 0x03. It does mic mute, M4 and Wi-Fi itself and passes every code
+  to AsusWmi through user client selector `kAsusUcKey` (ABI 4). Reading a keyboard needs **Input Monitoring** for
+  `~/Library/Application Support/RogControl/rogkeyd.app`, granted once. macOS ties the grant to the binary, so the install
+  keeps an unchanged binary. Log: `~/Library/Logs/rogkeyd.log`.
+- **AsusWmi 0.2.0** handles the keyboard light, Slash, profile and sleep, plus brightness. For brightness it sends the
+  ACPI notification the firmware would send to the panel device, which BrightnessKeys already listens to. It counts every
+  key in `sysctl debug.asuswmi.hotkey` (`<sequence> <code>`), and RogControl refreshes when that count moves.
+
+Undo: `scripts/build-rogkeys.sh --uninstall`. The AsusWmi key selector does nothing without rogkeyd.
 
 ## Black screen with AsusNKey 0.1.0 (2026-11-05 17:37 and 17:39 boots, traced from Windows)
 
@@ -52,7 +56,9 @@ stayed black. **WindowServer crash-loops** as soon as it enumerates HID devices.
   key WindowServer reads could not be confirmed from Windows: the E: volume is the Data volume, with no dyld shared cache to
   disassemble SkyLight.
 
-**Now:** the AsusNKey Kernel>Add entry is `Enabled = false` on the ESP (backup
+**Result:** AsusNKey is removed (2026-11-05 18:11, kext kept in `~/efi-audit/AsusNKey.kext.disabled`). Replacing a dext-driven
+keyboard with a kernel `IOHIDEventDriver` gives a service without the properties WindowServer needs, so that route is closed.
+It was first disabled on the ESP (backup
 `EFI/OC/config.plist.pre-asusnkey-off-20261105-180109`). Apple's dext keeps the keyboard; the 0x5A Fn keys do nothing.
 
 ### To trace on macOS (before turning AsusNKey back on)
