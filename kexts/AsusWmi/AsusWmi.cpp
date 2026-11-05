@@ -139,6 +139,8 @@ public:
     IOReturn blSet(int lvl);
     // N-KEY keyboard (HID 0b05:19b6): backlight (feature report 0x5A) and Slash lighting (0x5D), sent as G-Helper does
     int kbdLevel = -1;
+    int auraMode = -1;                       // index into kAuraModes, -1 = not set since load
+    IOReturn auraSet(int idx);
     int64_t slashSet = -1;
     bool hidSeen = false;
     IOReturn hidFeature(const uint8_t *cmd, size_t n, size_t total);
@@ -151,7 +153,8 @@ public:
     // codes from rogkeyd (user client): queued, handled on keyCall with `lock` held; bit 8 = from the N-KEY keyboard
     thread_call_t keyCall = nullptr;
     IOSimpleLock *keyQLock = nullptr;
-    uint16_t keyQ[16];
+    static constexpr unsigned kKeyQLen = 16;
+    uint16_t keyQ[kKeyQLen];
     unsigned keyQHead = 0, keyQTail = 0;
     void keyQueue(uint32_t code);
     void keyDrain();
@@ -362,6 +365,27 @@ IOReturn AsusWmi::kbdSet(int level)
     return r;
 }
 
+// G-Helper Aura.AuraMessage / MESSAGE_SET / MESSAGE_APPLY on report 0x5D (128 bytes), after the 5D "ASUS Tech.Inc." init.
+// The GA403 keyboard is single-color: only Static, Breathe and Strobe apply; red carries the level, speed is "normal".
+static const uint8_t kAuraModes[] = { 0x00, 0x01, 0x0A };
+static const char *const kAuraNames[] = { "static", "breathe", "strobe" };
+IOReturn AsusWmi::auraSet(int idx)
+{
+    if (idx < 0 || idx >= (int)sizeof(kAuraModes)) return kIOReturnBadArgument;
+    uint8_t init[15] = { 0x5D };
+    memcpy(init + 1, kAsusMagic, sizeof(kAsusMagic));
+    const uint8_t mode = kAuraModes[idx];
+    const uint8_t msg[13] = { 0x5D, 0xB3, 0x00, mode, 0xFF, 0x00, 0x00, 0xEB, 0x00, (uint8_t)(mode == 0x01 ? 1 : 0), 0xFF, 0x00, 0x00 };
+    const uint8_t set[5] = { 0x5D, 0xB5, 0x00, 0x00, 0x00 }, apply[2] = { 0x5D, 0xB4 };
+    IOReturn r = hidFeature(init, sizeof(init), 128);
+    if (r == kIOReturnSuccess) r = hidFeature(msg, sizeof(msg), 128);
+    if (r == kIOReturnSuccess) r = hidFeature(set, sizeof(set), 128);
+    if (r == kIOReturnSuccess) r = hidFeature(apply, sizeof(apply), 128);
+    if (r == kIOReturnSuccess) auraMode = idx;
+    say("aura %s -> %08x", kAuraNames[idx], r);
+    return r;
+}
+
 // G-Helper SlashDeviceAura (report 0x5D, 128 bytes) for this keyboard: wake up, enable, init, mode, options, save; off = disable.
 static const uint8_t kSlashCode[ASUS_SLASH_MODE_COUNT] = { 0x06, 0x10, 0x12, 0x13, 0x1D, 0x1A, 0x19, 0x25,
                                                            0x24, 0x26, 0x32, 0x33, 0x34, 0x42, 0x43, 0x44 };
@@ -404,11 +428,7 @@ void AsusWmi::hotkey(uint32_t code, bool keyboard)
     case 0xC4: kbdSet(kbdLevel < 0 ? 1 : (kbdLevel < 3 ? kbdLevel + 1 : 3)); break;     // Fn+F3
     case 0xC5: kbdSet(kbdLevel < 0 ? 0 : (kbdLevel > 0 ? kbdLevel - 1 : 0)); break;     // Fn+F2
     case 0xAE: setValue(ASUS_SET_PROFILE, curProfile < 0 ? 1 : (curProfile + 1) % 3); break;   // Fn+F5: as asus-wmi
-    case 0xB3: {                                                                         // Fn+F4: Slash on / off
-        uint32_t s = slashSet >= 0 ? (uint32_t)slashSet : ASUS_SLASH_PACK(0, 0, 0);
-        slashApply(ASUS_SLASH_PACK(ASUS_SLASH_MODE(s), ASUS_SLASH_BRIGHT(s) ? 0 : 2, ASUS_SLASH_INTERVAL(s)));
-        break;
-    }
+    case 0xB3: auraSet((auraMode + 1) % (int)sizeof(kAuraModes)); break;                 // Fn+F4: next Aura mode
     case 0x10: case 0x20:                                                                // Fn+F7 / F8: brightness
         if (keyboard && lcd) {     // ATKD models get the firmware's own Notify; only the keyboard's code needs one
             UInt32 n = code == 0x20 ? 0x86 : 0x87;
@@ -426,7 +446,7 @@ void AsusWmi::keyQueue(uint32_t code)
 {
     if (!keyQLock || !keyCall || (code & 0xFF) == 0 || code > 0x1FF) return;
     IOSimpleLockLock(keyQLock);
-    unsigned next = (keyQHead + 1) % sizeof(keyQ);
+    unsigned next = (keyQHead + 1) % kKeyQLen;
     if (next != keyQTail) { keyQ[keyQHead] = (uint16_t)code; keyQHead = next; }   // full: drop the newest
     IOSimpleLockUnlock(keyQLock);
     thread_call_enter(keyCall);
@@ -438,7 +458,7 @@ void AsusWmi::keyDrain()
         IOSimpleLockLock(keyQLock);
         bool empty = keyQHead == keyQTail;
         uint16_t code = empty ? 0 : keyQ[keyQTail];
-        if (!empty) keyQTail = (keyQTail + 1) % sizeof(keyQ);
+        if (!empty) keyQTail = (keyQTail + 1) % kKeyQLen;
         IOSimpleLockUnlock(keyQLock);
         if (empty) return;
         IOLockLock(lock);
@@ -782,7 +802,7 @@ static void buildStatus()
                           gSelf->fanCustom, gSelf->curProfile, gSelf->curCharge);
     uint32_t bl = 0;
     if (gSelf->blGet(&bl)) n += (size_t)snprintf(gStatus + n, sizeof(gStatus) - n, " backlight=%u/%u", bl, gSelf->blMaxLevel);
-    n += (size_t)snprintf(gStatus + n, sizeof(gStatus) - n, " kbd=%d slash=%lld last_key=%02x", gSelf->kbdLevel,
+    n += (size_t)snprintf(gStatus + n, sizeof(gStatus) - n, " kbd=%d aura=%d slash=%lld last_key=%02x", gSelf->kbdLevel, gSelf->auraMode,
                           (long long)gSelf->slashSet, gSelf->lastKey);
     for (int i = 0; i < 3; i++) {
         static const char *const nm[3] = { "spl", "sppt", "fppt" };

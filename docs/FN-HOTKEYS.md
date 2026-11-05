@@ -9,14 +9,14 @@ for all keys. The keyboard sends them in two ways.
 |---|---|---|
 | Fn+F1 | consumer Mute (02 e2) | macOS |
 | Fn+F2 / F3 | 5A c5 / 5A c4 | AsusWmi: keyboard light down / up |
-| Fn+F4 | 5A b3 | AsusWmi: Slash on / off |
+| Fn+F4 | 5A b3 | AsusWmi: next Aura mode (static, breathe, strobe; report 5D B3/B5/B4 as G-Helper) |
 | Fn+F5 | 5A ae | AsusWmi: next profile |
 | Fn+F6 | keyboard Win+Shift+S | macOS (arrives as Cmd+Shift+S) |
 | Fn+F7 / F8 | 5A 10 / 5A 20 | AsusWmi: Notify (VGA.LCD, 0x87 / 0x86) to BrightnessKeys |
-| Fn+F9 | keyboard Win+P | macOS (arrives as Cmd+P) |
-| Fn+F10 | 5A 6b | nothing yet (no touchpad switch in VoodooI2C) |
+| Fn+F9 | keyboard Win+P | rogkeyd: opens Displays settings; with Accessibility drops only this firmware Cmd+P (a typed Cmd+P still prints) |
+| Fn+F10 | 5A 6b | roadmap: touchpad on / off (see below) |
 | Fn+F11 | 5A 6c | AsusWmi: sleep |
-| Fn+F12 | report 03 | rogkeyd: Wi-Fi on / off (code 0x88) |
+| Fn+F12 | report 03 | rogkeyd: airplane mode, Wi-Fi + Bluetooth off, then back as they were (code 0x88) |
 | M1 / M2 | consumer Vol- / Vol+ (02 ea / 02 e9) | macOS |
 | M3 | 5A 7c | rogkeyd: built-in mic mute |
 | M4 | 5A 38 | rogkeyd: opens ROG Control |
@@ -36,6 +36,28 @@ macOS's keyboard driver (the AppleUserHIDEventService dext) drops page 0xFF31, a
   key in `sysctl debug.asuswmi.hotkey` (`<sequence> <code>`), and RogControl refreshes when that count moves.
 
 Undo: `scripts/build-rogkeys.sh --uninstall`. The AsusWmi key selector does nothing without rogkeyd.
+
+## Panic on Fn+F7 / F8 with AsusWmi 0.2.0 (2026-11-05 21:39)
+
+Kernel trap 13 (general protection) in `AsusWmi::hotkey` from `keyDrain`, RAX 0x87 (brightness down), RDI
+0x01c501c501c501c5: the `lcd` pointer had been overwritten with four queued Fn+F2 codes (0x1c5 = 0xc5 | keyboard bit).
+The key ring wrapped with `% sizeof(keyQ)`, 32 (bytes), on a 16-entry `uint16_t` array, so entries 16 to 31 went past the
+array into the head/tail indices and `lcd`. Any 16 keys since boot started the overwrite; the next F7/F8 called through
+the bad pointer. Fixed in 0.2.1 (`kKeyQLen`); the brightness path itself is unchanged.
+
+## Fn+F9
+
+The firmware types Win+P in one keyboard report (GUI and P together) and holds GUI about 7 s. macOS turns it into Cmd+P,
+the same event as a typed Cmd+P, so a filter on Cmd+P alone would break Print. rogkeyd reads the raw report (a typed Cmd+P
+comes as two reports, Cmd first), marks it, and its event tap drops only the next Cmd+P within 300 ms of that mark, then
+takes Cmd off keys until the firmware lets GUI go. Without the Accessibility grant Fn+F9 still opens Displays settings and
+the Cmd+P goes through.
+
+## Roadmap
+
+- Fn+F10 (5A 6b): touchpad on / off. Needs a disable switch in VoodooI2CHID (or AsusWmi telling it to drop reports) and an
+  on-screen state; Windows shows an OSD.
+- Fn+F6 (Win+Shift+S, arrives as Cmd+Shift+S): left to the owner's own key mapping.
 
 ## Black screen with AsusNKey 0.1.0 (2026-11-05 17:37 and 17:39 boots, traced from Windows)
 

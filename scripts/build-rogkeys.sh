@@ -20,7 +20,7 @@ fi
 rm -rf "$APP"; mkdir -p "$APP/Contents/MacOS"
 cp macos/RogKeys/Info.plist "$APP/Contents/Info.plist"
 swiftc -O -target x86_64-apple-macos13.0 macos/RogKeys/rogkeyd.swift -o "$APP/Contents/MacOS/rogkeyd" \
-  -framework IOKit -framework CoreAudio -framework CoreWLAN -framework AppKit
+  -framework IOKit -framework CoreAudio -framework CoreWLAN -framework AppKit -framework ApplicationServices
 codesign --force --sign - --identifier com.itlmt7925.rogkeyd "$APP" >/dev/null
 echo "built $APP"
 [ "${1:-}" = "--install" ] || exit 0
