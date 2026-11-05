@@ -478,7 +478,7 @@ struct ErrorLine: View {
     let text: String
     var body: some View {
         if !text.isEmpty {
-            Label(text, systemImage: "exclamationmark.triangle.fill").font(.system(size: 11)).foregroundStyle(.red)
+            Label(text, systemImage: "exclamationmark.triangle.fill").font(.system(size: 11)).foregroundStyle(T.amber)   // not red: red already means "selected"
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -618,8 +618,10 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 5) {
                 Caps("Mode"); Spacer()
-                Image(systemName: m.st.ac ? "powerplug.fill" : "battery.75percent").font(.system(size: 9.5)).foregroundStyle(T.dim)
-                Text(m.st.ac ? "On charger" : "On battery").font(.system(size: 10.5)).foregroundStyle(T.dim)
+                if m.st.present {   // the power source comes from AsusWmi: without it, say nothing
+                    Image(systemName: m.st.ac ? "powerplug.fill" : "battery.75percent").font(.system(size: 9.5)).foregroundStyle(T.dim)
+                    Text(m.st.ac ? "On charger" : "On battery").font(.system(size: 10.5)).foregroundStyle(T.dim)
+                }
             }
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)], spacing: 6) {
                 ForEach(Mode.allCases) { mode in
@@ -683,8 +685,9 @@ enum T {
     static let line = Color.white.opacity(0.07)
     static let text = Color(red: 0.93, green: 0.93, blue: 0.94)
     static let dim = Color(red: 0.55, green: 0.57, blue: 0.60)
-    static let faint = Color(red: 0.40, green: 0.42, blue: 0.45)
-    static let red = Color(red: 1.0, green: 0.13, blue: 0.24)
+    static let faint = Color(red: 0.52, green: 0.54, blue: 0.57)   // 10 pt labels: 4.7:1 on raised, 5.1:1 on surface (WCAG AA 4.5:1)
+    static let red = Color(red: 1.0, green: 0.13, blue: 0.24)        // strokes, segments, text on dark (5.2:1 on bg)
+    static let redFill = Color(red: 0.86, green: 0.10, blue: 0.20)   // behind white text: 5.0:1 (T.red gives 3.8:1)
     static let amber = Color(red: 1.0, green: 0.70, blue: 0.20)
     static let nsBG = NSColor(red: 0.043, green: 0.047, blue: 0.055, alpha: 1)
     static func num(_ size: CGFloat, _ w: Font.Weight = .semibold) -> Font { .system(size: size, weight: w).width(.expanded) }
@@ -775,7 +778,7 @@ struct RogButtonStyle: ButtonStyle {
             let filled = selected || prominent
             configuration.label
                 .foregroundStyle(filled ? Color.white : (enabled ? T.text : T.faint))
-                .background(filled ? T.red.opacity(configuration.isPressed ? 0.8 : 1) : (configuration.isPressed ? T.hover : hover && enabled ? T.hover : T.raised),
+                .background(filled ? T.redFill.opacity(configuration.isPressed ? 0.8 : 1) : (configuration.isPressed ? T.hover : hover && enabled ? T.hover : T.raised),
                             in: Chamfer(cut: cut))
                 .contentShape(Chamfer(cut: cut))
                 .onHover { hover = $0 }
@@ -1211,6 +1214,7 @@ struct ModeCard: View {
 extension RogModel {
     var batteryLevel: Int? { st.batFull > 0 ? min(100, max(0, st.batNow * 100 / st.batFull)) : nil }
     var batteryState: String {
+        guard st.present else { return "" }
         let limit = st.charge.map { " at \($0)%" } ?? ""
         if st.batState & 2 != 0 { return "Charging" + (st.batRate > 0 ? ", \(st.batRate) mA" : "") }
         if st.batState & 1 != 0 { return "On battery" + (st.batRate > 0 ? ", \(st.batRate) mA" : "") }
@@ -1888,12 +1892,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
 enum Snapshot {
     static func mock(manual: Bool, offline: Bool) -> RogModel {
         var st = AsusState()
-        st.present = !offline; st.ac = true; st.fanCustom = manual
+        // offline = what the app really has without AsusWmi: no hardware values, no readings, no history. Only saved
+        // preferences (custom limits) remain, as in the real app.
+        guard !offline else { return RogModel(preview: st, tctl: nil, watts: nil, curve: nil, gpuCurve: nil) }
+        st.present = true; st.ac = true; st.fanCustom = manual
         st.profile = manual ? 0 : 1; st.charge = 80; st.cpuFan = 5000; st.gpuFan = 5400; st.ppt = [45, 65, 80]
         st.gpuMux = 1; st.dgpu = 0; st.baseTgp = 55
         st.batDesign = 4580; st.batFull = 4132; st.batNow = 2440; st.batState = 0; st.batRate = 0
         st.lighting = true; st.kbd = 2; st.slash = Slash(mode: 7, bright: 2, interval: 1).packed; st.hid = true
-        let m = RogModel(preview: st, tctl: offline ? nil : 78, watts: offline ? nil : 46.8,
+        let m = RogModel(preview: st, tctl: 78, watts: 46.8,
                          curve: [43, 68, 70, 72, 74, 76, 78, 255, 1, 6, 8, 13, 18, 22, 32, 32],
                          gpuCurve: [43, 67, 68, 70, 70, 70, 70, 255, 1, 6, 8, 13, 18, 22, 32, 32])
         if manual { m.settings.mode = .manual }
