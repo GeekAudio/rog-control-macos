@@ -1543,31 +1543,89 @@ extension SoundState {
 struct SoundTile: View {
     @ObservedObject var m: RogModel
     var s: SoundState { m.sound }
-    let names = ["Off", "Balanced", "Movie", "Music", "Voice"]
+    static let profiles: [(name: String, icon: String)] = [("Off", "circle.slash"), ("Balanced", "slider.horizontal.3"),
+                                                          ("Movie", "film"), ("Music", "music.note"), ("Voice", "person.wave.2")]
+    // ROG Speakers and Built-in always get a card; one more card for the active (or first) other device, the rest go in a menu
+    var cards: [AudioDevice] {
+        let rank: (AudioDevice) -> Int = { $0.isRogSpeakers ? 0 : $0.builtin ? 1 : 2 }
+        let sorted = s.outputs.sorted { rank($0) < rank($1) }
+        var c = sorted.filter { rank($0) < 2 }
+        let others = sorted.filter { rank($0) == 2 }
+        if let o = others.first(where: { $0.id == s.output?.id }) ?? others.first { c.append(o) }
+        return c
+    }
+    var more: [AudioDevice] { s.outputs.filter { d in !cards.contains { $0.id == d.id } } }
     var body: some View {
         Card(pad: 14, stretch: true) {
-            TileHead(title: "Sound")
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(s.output?.label ?? "–").font(T.num(18)).foregroundStyle(T.text).lineLimit(1)
-                    Text(s.outputLine).font(.system(size: 11)).foregroundStyle(s.outputWarn ? T.amber : T.dim).lineLimit(1)
+            TileHead(title: "Sound output")
+            HStack(spacing: 8) {
+                ForEach(cards) { d in OutputCard(d: d, on: d.id == s.output?.id, s: s) { m.setOutput(d) } }
+                if !more.isEmpty {
+                    RogMenu(title: "More", items: more.map(\.label)) { m.setOutput(more[$0]) }
+                        .help("Other output devices")
                 }
-                Spacer()
-                RogMenu(title: "Output", items: s.outputs.map(\.label)) { m.setOutput(s.outputs[$0]) }
-                    .disabled(s.outputs.isEmpty)
-                    .help("ROG Speakers runs the sound profile; Built-in plays without it")
+            }
+            .padding(.top, 10)
+            if s.outputs.isEmpty { Text("No output device").font(.system(size: 11)).foregroundStyle(T.dim).padding(.top, 10) }
+            Spacer(minLength: 14)
+            HStack {
+                Caps("Sound profile"); Spacer()
+                if s.output?.isRogSpeakers != true && s.rog {
+                    Text("Applies to ROG Speakers").font(.system(size: 10.5)).foregroundStyle(T.faint)
+                }
+            }
+            HStack(spacing: 6) {
+                ForEach(Self.profiles.indices, id: \.self) { i in
+                    let p = Self.profiles[i], on = Sound.profiles.firstIndex(of: s.profile) == i
+                    Button { m.setProfile(Sound.profiles[i]) } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: p.icon).font(.system(size: 11, weight: .semibold))
+                            Text(p.name).font(.system(size: 12, weight: on ? .semibold : .regular))
+                        }
+                        .frame(maxWidth: .infinity).frame(height: 32)
+                    }
+                    .buttonStyle(RogButtonStyle(selected: on, cut: 6))
+                    .accessibilityLabel("Sound profile \(p.name)").accessibilityAddTraits(on ? .isSelected : [])
+                }
             }
             .padding(.top, 8)
-            Spacer(minLength: 12)
-            HStack {
-                Text("Profile").font(.system(size: 12)).foregroundStyle(T.text); Spacer()
-                Pills(items: names, selected: Sound.profiles.firstIndex(of: s.profile), minWidth: 34, pad: 7, label: "Sound profile") {
-                    m.setProfile(Sound.profiles[$0])
-                }
-                .disabled(!s.rog).opacity(s.rog ? 1 : 0.5)
-            }
+            .disabled(!s.rog).opacity(s.rog ? 1 : 0.5)
+            .animation(.easeOut(duration: 0.15), value: s.profile)
             ErrorLine(text: m.soundError).padding(.top, 6)
         }
+    }
+}
+
+// One output device: icon, name and what it does; the active one shows the live status instead, red-outlined like the mode rows
+struct OutputCard: View {
+    let d: AudioDevice, on: Bool, s: SoundState
+    let pick: () -> Void
+    @State private var hover = false
+    var icon: String { d.isRogSpeakers ? "hifispeaker.2.fill" : d.builtin ? "laptopcomputer" : "speaker.wave.2.fill" }
+    var name: String { d.isRogSpeakers ? "ROG Speakers" : d.builtin ? "Built-in" : d.name }
+    var note: String {
+        if on { return s.outputLine }
+        return d.isRogSpeakers ? "With the sound profile" : d.builtin ? "Direct, no profile" : "External device"
+    }
+    var body: some View {
+        Button(action: pick) {
+            HStack(spacing: 10) {
+                Image(systemName: icon).font(.system(size: 15, weight: .medium)).foregroundStyle(on ? T.red : T.dim).frame(width: 22)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(name).font(.system(size: 13, weight: .semibold)).foregroundStyle(T.text).lineLimit(1)
+                    Text(note).font(.system(size: 10.5)).foregroundStyle(on && s.outputWarn ? T.amber : T.dim).lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 12).frame(maxWidth: .infinity).frame(height: 50)
+            .background(on ? T.red.opacity(0.10) : hover ? T.hover : T.raised, in: Chamfer(cut: 8))
+            .overlay(Chamfer(cut: 8).stroke(on ? T.red : Color.clear, lineWidth: 1))
+            .contentShape(Chamfer(cut: 8))
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+        .help(d.isRogSpeakers ? "ROG Speakers runs the sound profile" : d.builtin ? "Built-in plays without the profile" : d.name)
+        .accessibilityLabel("Output \(name)").accessibilityValue(note).accessibilityAddTraits(on ? .isSelected : [])
     }
 }
 
