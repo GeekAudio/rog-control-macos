@@ -20,7 +20,7 @@ if xcrun --find actool >/dev/null 2>&1; then
 else
   echo "actool not found (install Xcode): building without the app icon" >&2
 fi
-swiftc -O -target x86_64-apple-macos13.0 macos/RogControl/RogControl.swift -o "$APP/Contents/MacOS/RogControl" -framework IOKit -framework SwiftUI
+swiftc -O -target x86_64-apple-macos13.0 macos/RogControl/RogControl.swift -o "$APP/Contents/MacOS/RogControl" -framework IOKit -framework SwiftUI -framework CoreAudio -framework CoreMediaIO
 codesign --force --sign - "$APP" >/dev/null
 echo "built $APP"
 if [ "${1:-}" = "--install" ]; then
