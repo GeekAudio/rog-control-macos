@@ -46,7 +46,7 @@ struct Slash: Equatable {
 }
 
 enum Asus {
-    static let abi: UInt32 = 3
+    static let abi: UInt32 = 4                                    // ABI 4 adds only the key selector; the state words are the same
     enum Sel: UInt32 { case state = 0, set = 1, fanRead = 2, fanWrite = 3, fanReset = 4 }
     enum What: UInt64 { case profile = 1, spl = 2, sppt = 3, fppt = 4, charge = 5, backlight = 6, kbd = 7, slash = 8 }
 

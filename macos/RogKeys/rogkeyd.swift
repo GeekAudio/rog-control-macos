@@ -12,6 +12,7 @@
 //   (B3), profile (AE), brightness (10 / 20) and sleep (6C), and counts the keys for RogControl.
 //
 // Runs as a LaunchAgent (com.itlmt7925.rogkeyd). Log: ~/Library/Logs/rogkeyd.log.
+// One codesign identifier for every build; still, macOS ties an ad-hoc grant to the binary, so a new build needs the grant again.
 import AppKit
 import CoreAudio
 import CoreWLAN
@@ -90,30 +91,44 @@ func key(_ code: UInt8) {
 }
 
 // ---- keyboard -----------------------------------------------------------------------------------------------------------
-let mgr = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
-IOHIDManagerSetDeviceMatching(mgr, [kIOHIDVendorIDKey: 0x0B05, kIOHIDProductIDKey: 0x19B6] as CFDictionary)
+// An open made while the login session is still coming up, or before the Input Monitoring grant, can succeed and still
+// deliver no reports, and a reopen of the same manager does not fix that. So the manager is rebuilt: until an open works,
+// once 30 s after start (the login race), and after every wake or session switch.
 let onReport: IOHIDReportCallback = { _, _, _, type, id, report, len in
     guard type == kIOHIDReportTypeInput else { return }
     if id == 0x5A, len >= 2, report[1] != 0 { key(report[1]) }
     else if id == 0x03 { key(0x88) }
 }
-IOHIDManagerRegisterInputReportCallback(mgr, onReport, nil)
-IOHIDManagerScheduleWithRunLoop(mgr, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
-
+var mgr: IOHIDManager?
 var opened = false
-func tryOpen() {
-    let r = IOHIDManagerOpen(mgr, IOOptionBits(kIOHIDOptionsTypeNone))
-    if r == kIOReturnSuccess { opened = true; log("reading the N-KEY keyboard"); return }
-    if IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) != kIOHIDAccessTypeGranted {
+func start(_ why: String) {
+    if let m = mgr {
+        IOHIDManagerUnscheduleFromRunLoop(m, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
+        IOHIDManagerClose(m, IOOptionBits(kIOHIDOptionsTypeNone))
+    }
+    let m = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
+    IOHIDManagerSetDeviceMatching(m, [kIOHIDVendorIDKey: 0x0B05, kIOHIDProductIDKey: 0x19B6] as CFDictionary)
+    IOHIDManagerRegisterInputReportCallback(m, onReport, nil)
+    IOHIDManagerScheduleWithRunLoop(m, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
+    mgr = m
+    let access = IOHIDCheckAccess(kIOHIDRequestTypeListenEvent)
+    let r = IOHIDManagerOpen(m, IOOptionBits(kIOHIDOptionsTypeNone))
+    let devices = (IOHIDManagerCopyDevices(m) as? Set<IOHIDDevice>)?.count ?? 0
+    opened = r == kIOReturnSuccess && access == kIOHIDAccessTypeGranted && devices > 0
+    log(String(format: "%@: open 0x%08x, access %u, %d device(s)%@", why, r, access.rawValue, devices,
+               opened ? ", reading the N-KEY keyboard" : ""))
+    if access != kIOHIDAccessTypeGranted {
         _ = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
         log("no Input Monitoring access: allow rogkeyd in System Settings > Privacy & Security > Input Monitoring")
-    } else {
-        log(String(format: "keyboard open failed 0x%08x", r))
     }
 }
-tryOpen()
-let retry = Timer(timeInterval: 10, repeats: true) { t in
-    if opened { t.invalidate() } else { tryOpen() }
+start("start")
+RunLoop.main.add(Timer(timeInterval: 10, repeats: true) { _ in if !opened { start("retry") } }, forMode: .default)
+RunLoop.main.add(Timer(timeInterval: 30, repeats: false) { _ in start("after login") }, forMode: .default)
+let ws = NSWorkspace.shared.notificationCenter
+for n in [NSWorkspace.didWakeNotification, NSWorkspace.sessionDidBecomeActiveNotification] {
+    ws.addObserver(forName: n, object: nil, queue: .main) { note in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { start(note.name == NSWorkspace.didWakeNotification ? "wake" : "session") }
+    }
 }
-RunLoop.main.add(retry, forMode: .default)
 CFRunLoopRun()
