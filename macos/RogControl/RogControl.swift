@@ -18,6 +18,8 @@ import SwiftUI
 import Charts
 import IOKit
 import IOKit.ps
+import CoreAudio
+import CoreMediaIO
 
 // ---- driver access (asuswmi_abi.h) -----------------------------------------------------------------------------------------
 struct AsusState {
@@ -142,6 +144,147 @@ enum Sensors {
 }
 
 // ---- modes and settings ------------------------------------------------------------------------------------------------------
+// ---- sound, microphone, camera ------------------------------------------------------------------------------------------------
+// RogAudio (installed on its own: RogAudio.driver + rogaudiod) adds "ROG Speakers", a sound profile chain in front of the built-in
+// speakers, and "ROG Clear Mic", the noise-reduced built-in mic. ROG Control talks to it only through its settings file, which
+// rogaudiod re-reads every 250 ms (profile, micEnabled, autoDefault), and reads its status file. The firmware has no camera switch
+// and no mic-mute LED (ATKD answers "unsupported" for 0x00040017 and has no 0x00060013), so mute and camera state are plain
+// CoreAudio and CoreMediaIO. Nothing here asks for microphone or camera access: only device properties are read.
+struct AudioDevice: Identifiable, Equatable {
+    let id: AudioObjectID, uid: String, name: String, builtin: Bool
+    var isRogSpeakers: Bool { uid == Sound.speakersUID }
+    var label: String { isRogSpeakers ? "ROG Speakers" : builtin ? "Built-in, no profile" : name }
+}
+
+struct SoundState {
+    var outputs: [AudioDevice] = []
+    var output: AudioDevice?             // default output
+    var input: AudioDevice?              // default input
+    var rog = false                      // the ROG Speakers device exists (RogAudio.driver installed)
+    var daemon = false                   // rogaudiod wrote its status file in the last 10 s
+    var chain = false                    // rogaudiod's speaker path is running
+    var profile = "balanced"
+    var clearMic = false                 // settings micEnabled
+    var micMuted: Bool?                  // built-in mic mute; nil when there is no built-in mic
+    var micInUse = false
+    var camera: String?                  // camera name; nil when none is attached
+    var cameraInUse = false
+}
+
+enum Sound {
+    static let speakersUID = "com.itlmt7925.rogaudio.speakers", micUID = "com.itlmt7925.rogaudio.mic"
+    static let profiles = ["off", "balanced", "movie", "music", "voice"]
+    static var dir: URL { FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/RogAudio") }
+    static let system = AudioObjectID(kAudioObjectSystemObject)
+
+    static func addr(_ s: AudioObjectPropertySelector, _ sc: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal,
+                     _ e: AudioObjectPropertyElement = kAudioObjectPropertyElementMain) -> AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(mSelector: s, mScope: sc, mElement: e)
+    }
+    static func u32(_ d: AudioObjectID, _ s: AudioObjectPropertySelector, _ sc: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal) -> UInt32? {
+        var a = addr(s, sc), v: UInt32 = 0, n = UInt32(4)
+        return AudioObjectGetPropertyData(d, &a, 0, nil, &n, &v) == 0 ? v : nil
+    }
+    static func string(_ d: AudioObjectID, _ s: AudioObjectPropertySelector) -> String? {
+        var a = addr(s), v: Unmanaged<CFString>?, n = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        guard AudioObjectGetPropertyData(d, &a, 0, nil, &n, &v) == 0, let r = v?.takeRetainedValue() else { return nil }
+        return r as String
+    }
+    static func streams(_ d: AudioObjectID, input: Bool) -> Int {
+        var a = addr(kAudioDevicePropertyStreams, input ? kAudioObjectPropertyScopeInput : kAudioObjectPropertyScopeOutput), n: UInt32 = 0
+        return AudioObjectGetPropertyDataSize(d, &a, 0, nil, &n) == 0 ? Int(n) / 4 : 0
+    }
+    static func ids() -> [AudioObjectID] {
+        var a = addr(kAudioHardwarePropertyDevices), n: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(system, &a, 0, nil, &n) == 0, n > 0 else { return [] }
+        var v = [AudioObjectID](repeating: 0, count: Int(n) / 4)
+        return AudioObjectGetPropertyData(system, &a, 0, nil, &n, &v) == 0 ? v : []
+    }
+    static func device(_ id: AudioObjectID) -> AudioDevice? {
+        guard id != 0, let uid = string(id, kAudioDevicePropertyDeviceUID) else { return nil }
+        return AudioDevice(id: id, uid: uid, name: string(id, kAudioObjectPropertyName) ?? uid,
+                           builtin: !uid.hasPrefix("com.itlmt7925.") && u32(id, kAudioDevicePropertyTransportType) == kAudioDeviceTransportTypeBuiltIn)
+    }
+    static func defaultID(input: Bool) -> AudioObjectID {
+        u32(system, input ? kAudioHardwarePropertyDefaultInputDevice : kAudioHardwarePropertyDefaultOutputDevice) ?? 0
+    }
+    static func setDefault(_ id: AudioObjectID, input: Bool) -> Bool {
+        var v = id
+        let sels = input ? [kAudioHardwarePropertyDefaultInputDevice]
+                         : [kAudioHardwarePropertyDefaultOutputDevice, kAudioHardwarePropertyDefaultSystemOutputDevice]
+        return sels.allSatisfy { sel in var a = addr(sel); return AudioObjectSetPropertyData(system, &a, 0, nil, 4, &v) == 0 }
+    }
+    static func running(_ id: AudioObjectID) -> Bool { (u32(id, kAudioDevicePropertyDeviceIsRunningSomewhere) ?? 0) != 0 }
+    static func byUID(_ uid: String) -> AudioObjectID? {
+        var a = addr(kAudioHardwarePropertyTranslateUIDToDevice), s = uid as CFString, d: AudioObjectID = 0, n = UInt32(4)
+        let rc = withUnsafeMutablePointer(to: &s) { AudioObjectGetPropertyData(system, &a, UInt32(MemoryLayout<CFString>.size), $0, &n, &d) }
+        return rc == 0 && d != 0 ? d : nil
+    }
+    static func builtinInput() -> AudioObjectID? {
+        ids().first { streams($0, input: true) > 0 && device($0)?.builtin == true }
+    }
+    static func mute(_ d: AudioObjectID) -> Bool? { u32(d, kAudioDevicePropertyMute, kAudioObjectPropertyScopeInput).map { $0 != 0 } }
+    static func setMute(_ d: AudioObjectID, _ on: Bool) -> Bool {
+        var a = addr(kAudioDevicePropertyMute, kAudioObjectPropertyScopeInput), v: UInt32 = on ? 1 : 0
+        return AudioObjectSetPropertyData(d, &a, 0, nil, 4, &v) == 0
+    }
+
+    static func plist(_ name: String) -> [String: Any] {
+        guard let d = try? Data(contentsOf: dir.appendingPathComponent(name)),
+              let p = try? PropertyListSerialization.propertyList(from: d, format: nil) as? [String: Any] else { return [:] }
+        return p
+    }
+    // merges the change into rogaudiod's settings file (strixampctl reads the same file for the amp volume and mute)
+    static func write(_ change: [String: Any]) -> Bool {
+        var p = plist("settings.plist")
+        for (k, v) in change { p[k] = v }
+        guard let d = try? PropertyListSerialization.data(fromPropertyList: p, format: .xml, options: 0) else { return false }
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return (try? d.write(to: dir.appendingPathComponent("settings.plist"), options: .atomic)) != nil
+    }
+
+    static func state() -> SoundState {
+        var st = SoundState()
+        let all = ids()
+        st.outputs = all.filter { streams($0, input: false) > 0 && u32($0, kAudioDevicePropertyIsHidden) != 1 }.compactMap(device)
+        st.output = device(defaultID(input: false))
+        st.input = device(defaultID(input: true))
+        st.rog = st.outputs.contains { $0.isRogSpeakers }
+        let status = plist("status.plist"), settings = plist("settings.plist")
+        let updated = (status["updated"] as? Double) ?? 0
+        st.daemon = abs(Date().timeIntervalSince1970 - updated) < 10
+        st.chain = st.daemon && (status["speakerActive"] as? Bool ?? false)
+        st.profile = settings["profile"] as? String ?? "balanced"
+        st.clearMic = settings["micEnabled"] as? Bool ?? false
+        if let mic = builtinInput() {
+            st.micMuted = mute(mic)
+            st.micInUse = running(mic) || (byUID(micUID).map(running) ?? false)
+        }
+        (st.camera, st.cameraInUse) = Camera.state()
+        return st
+    }
+}
+
+enum Camera {
+    static func addr(_ s: Int) -> CMIOObjectPropertyAddress {
+        CMIOObjectPropertyAddress(mSelector: CMIOObjectPropertySelector(s), mScope: CMIOObjectPropertyScope(kCMIOObjectPropertyScopeGlobal),
+                                  mElement: CMIOObjectPropertyElement(kCMIOObjectPropertyElementMain))
+    }
+    // the first video device and whether any app is capturing from it (the green light)
+    static func state() -> (String?, Bool) {
+        let sys = CMIOObjectID(kCMIOObjectSystemObject)
+        var a = addr(kCMIOHardwarePropertyDevices), n: UInt32 = 0, used: UInt32 = 0
+        guard CMIOObjectGetPropertyDataSize(sys, &a, 0, nil, &n) == 0, n > 0 else { return (nil, false) }
+        var ids = [CMIOObjectID](repeating: 0, count: Int(n) / MemoryLayout<CMIOObjectID>.size)
+        guard CMIOObjectGetPropertyData(sys, &a, 0, nil, n, &used, &ids) == 0, let cam = ids.first else { return (nil, false) }
+        var na = addr(kCMIOObjectPropertyName), name: Unmanaged<CFString>?
+        let nameOK = CMIOObjectGetPropertyData(cam, &na, 0, nil, UInt32(MemoryLayout<Unmanaged<CFString>?>.size), &used, &name) == 0
+        var ra = addr(kCMIODevicePropertyDeviceIsRunningSomewhere), run: UInt32 = 0
+        _ = CMIOObjectGetPropertyData(cam, &ra, 0, nil, 4, &used, &run)
+        return (nameOK ? (name?.takeRetainedValue() as String?) ?? "Camera" : "Camera", run != 0)
+    }
+}
+
 enum Mode: String, CaseIterable, Identifiable {
     case silent, performance, turbo, manual
     var id: String { rawValue }
@@ -233,6 +376,8 @@ final class RogModel: ObservableObject {
     @Published var profileError = ""
     @Published var chargeError = ""
     @Published var lightingError = ""
+    @Published var sound = SoundState()
+    @Published var soundError = ""
     struct Sample: Identifiable { let id: Int; let date: Date; let temp: Double; let watts: Double? }
     @Published var history: [Sample] = []
     private var sampleID = 0
@@ -333,6 +478,7 @@ final class RogModel: ObservableObject {
         if st.present, lastAC != nil, lastAC != st.ac { powerChanged() }
         lastAC = st.ac
         if previousMode != activeMode { loadCurve() }
+        if !preview { sound = Sound.state() }
         onChange?()
     }
 
@@ -407,6 +553,31 @@ final class RogModel: ObservableObject {
         gpuCurve = st.present ? Asus.fanCurve(fan: 1, profile: curveMode.firmwareProfile) : nil
     }
     func setLogin(_ on: Bool) { LoginItem.set(on); loginEnabled = LoginItem.enabled }
+
+    // ---- sound
+    // Built-in chosen by hand means "no profile": rogaudiod would otherwise move the default straight back to ROG Speakers.
+    func setOutput(_ d: AudioDevice) {
+        if sound.rog, !Sound.write(["autoDefault": !d.builtin]) { soundError = "RogAudio settings could not be saved."; return }
+        soundError = Sound.setDefault(d.id, input: false) ? "" : "\(d.label) could not be made the output."
+        sound = Sound.state()
+    }
+    func setProfile(_ p: String) {
+        soundError = Sound.write(["profile": p]) ? "" : "The sound profile was not saved."
+        sound = Sound.state()
+    }
+    // Clear Mic off: apps that record from ROG Clear Mic would get silence, so the built-in mic becomes the input again
+    func setClearMic(_ on: Bool) {
+        guard Sound.write(["micEnabled": on]) else { soundError = "Clear Mic setting was not saved."; return }
+        let target = on ? Sound.byUID(Sound.micUID) : (sound.input?.uid == Sound.micUID ? Sound.builtinInput() : nil)
+        if let t = target, !Sound.setDefault(t, input: true) { soundError = "The input device was not changed." } else { soundError = "" }
+        sound = Sound.state()
+    }
+    // mutes the built-in mic itself, so the direct input and ROG Clear Mic both go silent
+    func setMicMute(_ on: Bool) {
+        guard let mic = Sound.builtinInput(), Sound.setMute(mic, on) else { soundError = "The microphone could not be \(on ? "muted" : "unmuted")."; return }
+        soundError = ""
+        sound = Sound.state()
+    }
     // the mode each power source uses; the current one is applied, the other is only saved
     func mode(forAC ac: Bool) -> Mode { ac == st.ac ? settings.mode : SourceSettings.load(ac: ac).mode }
     func setMode(_ mode: Mode, forAC ac: Bool) {
@@ -568,6 +739,22 @@ struct ContentView: View {
             .disabled(!m.st.present)
             ErrorLine(text: m.chargeError)
             ErrorLine(text: m.lightingError)
+            VStack(spacing: 0) {                        // sound works without AsusWmi
+                row("Output") {
+                    RogMenu(title: m.sound.output?.label ?? "–", items: m.sound.outputs.map(\.label)) { m.setOutput(m.sound.outputs[$0]) }
+                }
+                Rectangle().fill(T.line).frame(height: 1)
+                row(m.sound.micInUse && m.sound.micMuted != true ? "Microphone · in use" : "Microphone") {
+                    Pills(items: ["On", "Muted"], selected: m.sound.micMuted.map { $0 ? 1 : 0 }, minWidth: 30, pad: 7, label: "Microphone") {
+                        m.setMicMute($0 == 1)
+                    }
+                    .disabled(m.sound.micMuted == nil)
+                }
+            }
+            .padding(.horizontal, 12)
+            .background(T.surface, in: Chamfer(cut: 10))
+            .overlay(Chamfer(cut: 10).stroke(T.line))
+            ErrorLine(text: m.soundError)
             footer
         }
         .padding(12).frame(width: 320)
@@ -1040,6 +1227,11 @@ struct RogWindowView: View {
                 .fixedSize(horizontal: false, vertical: true)
             }
             .disabled(!m.st.present)
+            HStack(alignment: .top, spacing: 12) {      // sound and camera do not need AsusWmi
+                SoundTile(m: m)
+                MicCameraTile(m: m)
+            }
+            .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.horizontal, 18).padding(.bottom, 18)
         .frame(width: 1120, alignment: .topLeading)
@@ -1334,6 +1526,97 @@ struct LightingTile: View {
         if !on { UserDefaults.standard.set(m.currentSlash.bright, forKey: "slash.on.bright") }
         m.setSlash(s)
     })
+}
+
+
+// ---- sound, mic and camera row ---------------------------------------------------------------------------------------------------
+extension SoundState {
+    var outputLine: String {
+        guard let o = output else { return "No output device" }
+        if o.isRogSpeakers { return !daemon ? "rogaudiod is not running, no sound" : chain ? "Sound profile on" : "Starting the sound profile" }
+        if o.builtin { return rog ? "Direct to the speakers, profile bypassed" : "RogAudio is not installed" }
+        return "Profile applies to the built-in speakers only"
+    }
+    var outputWarn: Bool { output?.isRogSpeakers == true && !daemon }
+}
+
+struct SoundTile: View {
+    @ObservedObject var m: RogModel
+    var s: SoundState { m.sound }
+    let names = ["Off", "Balanced", "Movie", "Music", "Voice"]
+    var body: some View {
+        Card(pad: 14, stretch: true) {
+            TileHead(title: "Sound")
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(s.output?.label ?? "–").font(T.num(18)).foregroundStyle(T.text).lineLimit(1)
+                    Text(s.outputLine).font(.system(size: 11)).foregroundStyle(s.outputWarn ? T.amber : T.dim).lineLimit(1)
+                }
+                Spacer()
+                RogMenu(title: "Output", items: s.outputs.map(\.label)) { m.setOutput(s.outputs[$0]) }
+                    .disabled(s.outputs.isEmpty)
+                    .help("ROG Speakers runs the sound profile; Built-in plays without it")
+            }
+            .padding(.top, 8)
+            Spacer(minLength: 12)
+            HStack {
+                Text("Profile").font(.system(size: 12)).foregroundStyle(T.text); Spacer()
+                Pills(items: names, selected: Sound.profiles.firstIndex(of: s.profile), minWidth: 34, pad: 7, label: "Sound profile") {
+                    m.setProfile(Sound.profiles[$0])
+                }
+                .disabled(!s.rog).opacity(s.rog ? 1 : 0.5)
+            }
+            ErrorLine(text: m.soundError).padding(.top, 6)
+        }
+    }
+}
+
+struct MicCameraTile: View {
+    @ObservedObject var m: RogModel
+    var s: SoundState { m.sound }
+    var body: some View {
+        Card(pad: 14, stretch: true) {
+            TileHead(title: "Microphone and camera")
+            HStack(spacing: 10) {
+                state("Microphone", s.micMuted == nil ? "Not found" : s.micMuted == true ? "Muted" : s.micInUse ? "In use" : "Ready",
+                      live: s.micInUse && s.micMuted != true)
+                Spacer()
+                Pills(items: ["On", "Muted"], selected: s.micMuted.map { $0 ? 1 : 0 }, minWidth: 34, pad: 7, label: "Microphone") {
+                    m.setMicMute($0 == 1)
+                }
+                .disabled(s.micMuted == nil)
+            }
+            .padding(.top, 8)
+            HStack {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Clear Mic").font(.system(size: 12)).foregroundStyle(T.text)
+                    Text(s.rog ? "Noise reduction, apps record from ROG Clear Mic" : "Needs RogAudio").font(.system(size: 10.5)).foregroundStyle(T.dim)
+                }
+                Spacer()
+                Toggle("Clear Mic", isOn: Binding(get: { s.clearMic }, set: { m.setClearMic($0) })).toggleStyle(.switch).labelsHidden().tint(T.red)
+                    .disabled(!s.rog)
+            }
+            .padding(.top, 8)
+            Rectangle().fill(T.line).frame(height: 1).padding(.vertical, 10)
+            HStack {
+                state("Camera", s.camera == nil ? "Not found" : s.cameraInUse ? "In use" : "Off", live: s.cameraInUse)
+                Spacer()
+                Text(s.camera ?? "").font(.system(size: 11)).foregroundStyle(T.dim).lineLimit(1)
+            }
+            .help("The firmware has no camera switch; macOS shows which app uses it in Control Center")
+        }
+    }
+    // a red dot marks live capture; the word says it too, so the colour never carries it alone
+    func state(_ title: String, _ value: String, live: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Caps(title)
+            HStack(spacing: 6) {
+                if live { Circle().fill(T.red).frame(width: 7, height: 7) }
+                Text(value).font(T.num(15)).foregroundStyle(T.text)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
 }
 
 // ---- dialogs ---------------------------------------------------------------------------------------------------------------------
@@ -1904,6 +2187,11 @@ enum Snapshot {
                          curve: [43, 68, 70, 72, 74, 76, 78, 255, 1, 6, 8, 13, 18, 22, 32, 32],
                          gpuCurve: [43, 67, 68, 70, 70, 70, 70, 255, 1, 6, 8, 13, 18, 22, 32, 32])
         if manual { m.settings.mode = .manual }
+        let rogOut = AudioDevice(id: 71, uid: Sound.speakersUID, name: "ROG Speakers", builtin: false)
+        m.sound = SoundState(outputs: [rogOut, AudioDevice(id: 92, uid: "builtin", name: "Built-in Output", builtin: true)],
+                             output: rogOut, input: AudioDevice(id: 47, uid: Sound.micUID, name: "ROG Clear Mic", builtin: false),
+                             rog: true, daemon: true, chain: true, profile: "balanced", clearMic: true, micMuted: false, micInUse: true,
+                             camera: "ASUS FHD webcam", cameraInUse: false)
         m.seedHistory()
         return m
     }
