@@ -2468,6 +2468,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         updateIcon()
         setupMenus()
         if !CommandLine.arguments.contains("--background") { showWindow() }
+        DistributedNotificationCenter.default().addObserver(forName: SingleInstance.showNote, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.showWindow() }     // a second copy was started and quit: it asked for the window
+        }
     }
 
     // Fn keys: rogkeyd reads them and AsusWmi applies keyboard light, Slash and profile; refresh when the count moves
@@ -2807,6 +2810,28 @@ if args.count >= 2 && args[1] == "--doctor" {             // the Doctor report o
 }
 if args.count >= 2 && args[1] == "--bench" {
     exit(bench(seconds: args.count >= 3 ? max(5, Int(args[2]) ?? 20) : 20))
+}
+
+// One ROG Control per user. Two paths start it: the LaunchAgent at login (--background) and LaunchServices (Finder, Spotlight,
+// M4, or macOS reopening it at login). launchd runs the binary without asking whether one is already there, so the first copy
+// holds an flock for its lifetime; a later copy asks it to show the window (unless it is the background start) and quits.
+enum SingleInstance {
+    static let showNote = Notification.Name("com.itlmt7925.RogControl.show")
+    nonisolated(unsafe) static var fd: Int32 = -1
+    static func claim() -> Bool {
+        let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/RogControl")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        fd = open(dir.appendingPathComponent("RogControl.lock").path, O_RDWR | O_CREAT | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { return true }              // no lock file: better two copies than none
+        return flock(fd, LOCK_EX | LOCK_NB) == 0         // released by the kernel when this process exits
+    }
+}
+if !SingleInstance.claim() {
+    if !CommandLine.arguments.contains("--background") {
+        DistributedNotificationCenter.default().postNotificationName(SingleInstance.showNote, object: nil, userInfo: nil, deliverImmediately: true)
+    }
+    print("RogControl is already running: \(CommandLine.arguments.contains("--background") ? "nothing to do" : "asked it to show its window")")
+    exit(0)
 }
 
 MainActor.assumeIsolated {                     // top-level code runs on the main thread
