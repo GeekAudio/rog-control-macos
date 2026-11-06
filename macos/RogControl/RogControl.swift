@@ -2091,9 +2091,12 @@ struct DoctorCheck: Identifiable {
         var word: String { self == .ok ? "OK" : self == .info ? "Info" : self == .warn ? "Check" : "Problem" }
     }
     struct Fix { let label: String; let run: @MainActor () -> Void }
+    // a fix the user finishes in System Settings: numbered steps, each with its own button
+    struct Step { let title: String; let detail: String; let button: String; let run: @MainActor () -> String }
     let id = UUID()
     let group: String, title: String, detail: String, level: Level
     var fix: Fix? = nil
+    var guide: [Step]? = nil
 }
 
 @MainActor
@@ -2121,6 +2124,39 @@ enum Doctor {
         }
     }
     typealias Fix = DoctorCheck.Fix
+    static let rogkeydApp = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/RogControl/rogkeyd.app")
+    @discardableResult static func shell(_ exe: String, _ args: [String]) -> Int32 {
+        let p = Process(); p.executableURL = URL(fileURLWithPath: exe); p.arguments = args
+        p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
+        guard (try? p.run()) != nil else { return -1 }
+        p.waitUntilExit(); return p.terminationStatus
+    }
+    static func restartKeyd() { shell("/bin/launchctl", ["kickstart", "-k", "gui/\(getuid())/\(rogkeydID)"]) }
+    // Input Monitoring / Accessibility for rogkeyd. A rebuilt rogkeyd keeps its name in the list but the old grant no longer
+    // matches it, so the entry is reset first; rogkeyd then asks again at its restart and shows up switched off.
+    static func permissionGuide(service: String, pane: String, name: String) -> [DoctorCheck.Step] {
+        [DoctorCheck.Step(title: "Reset rogkeyd's old entry",
+                          detail: "Takes the stale rogkeyd off the \(name) list and restarts it, so macOS asks again for this build.",
+                          button: "Reset") {
+            let r = shell("/usr/bin/tccutil", ["reset", service, rogkeydID])
+            restartKeyd()
+            return r == 0 ? "Done. macOS may now ask about rogkeyd: choose Open System Settings." : "Could not reset it: in \(name) select rogkeyd and press −."
+         },
+         DoctorCheck.Step(title: "Turn rogkeyd on in \(name)",
+                          detail: "Switch rogkeyd on. If it is not in the list, drag rogkeyd.app from the Finder window into it (its path is on the clipboard for + and ⌘⇧G).",
+                          button: "Open \(name)") {
+            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)")!)
+            NSWorkspace.shared.activateFileViewerSelecting([rogkeydApp])
+            NSPasteboard.general.clearContents(); NSPasteboard.general.setString(rogkeydApp.path, forType: .string)
+            return "Settings and Finder are open; the path is on the clipboard."
+         },
+         DoctorCheck.Step(title: "Restart rogkeyd and check",
+                          detail: "A permission counts only after rogkeyd restarts. If macOS asks to quit and reopen it, choose Later and press this.",
+                          button: "Restart and check") {
+            restartKeyd()
+            return "Restarted. Checking in a few seconds…"
+         }]
+    }
     // a LaunchAgent with a PID: rogkeyd never starts NSApplication, so NSRunningApplication does not list it
     static func agentRunning(_ label: String) -> Bool {
         let p = Process(), out = Pipe()
@@ -2148,22 +2184,37 @@ enum Doctor {
         return (reading, tap)
     }
     // kernel panics of the last 7 days, with the first non-Apple kext in the panicked backtrace
-    static func panics() -> [(date: Date, kext: String?, url: URL)] {
+    static func kextUUID(_ id: String) -> String? {
+        guard let info = KextManagerCopyLoadedKextInfo([id] as CFArray, ["OSBundleUUID"] as CFArray)?.takeRetainedValue() as? [String: Any],
+              let k = info[id] as? [String: Any], let u = k["OSBundleUUID"] else { return nil }
+        if let d = u as? Data, d.count == 16 { return NSUUID(uuidBytes: [UInt8](d)).uuidString }
+        return (u as? String)?.uppercased()
+    }
+    // the panicked kext's build (UUID in "id(version)[UUID]") still loaded? A panic of a replaced build is history.
+    static func panicStillLoaded(_ p: (date: Date, kext: String?, uuid: String?, url: URL)) -> Bool {
+        guard let k = p.kext, let u = p.uuid, let now = kextUUID(k) else { return true }
+        return now == u
+    }
+    static func panics() -> [(date: Date, kext: String?, uuid: String?, url: URL)] {
         let dir = URL(fileURLWithPath: "/Library/Logs/DiagnosticReports")
         let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
         let week = Date().addingTimeInterval(-7 * 86400)
         return files.filter { $0.pathExtension == "panic" }.compactMap { u in
             guard let d = (try? u.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate, d > week else { return nil }
             let t = (try? String(contentsOf: u, encoding: .utf8)) ?? ""
-            var kext: String?
+            var kext: String?, uuid: String?
             if let r = t.range(of: "Kernel Extensions in backtrace:") {
                 let after = t[r.upperBound...]
-                if let m = after.range(of: #"(?<![\w.])([a-z0-9-]+\.[\w.-]+)\("#, options: .regularExpression) {
-                    let id = String(after[m].dropLast())
-                    if !id.hasPrefix("com.apple.") { kext = id }
+                if let m = after.range(of: #"(?<![\w.])[a-z0-9-]+\.[\w.-]+\([^)]*\)\[[0-9A-Fa-f-]{36}\]"#, options: .regularExpression) {
+                    let hit = String(after[m])
+                    let id = String(hit[..<hit.firstIndex(of: "(")!])
+                    if !id.hasPrefix("com.apple.") {
+                        kext = id
+                        uuid = hit.range(of: #"[0-9A-Fa-f-]{36}"#, options: .regularExpression).map { String(hit[$0]).uppercased() }
+                    }
                 }
             }
-            return (d, kext, u)
+            return (d, kext, uuid, u)
         }.sorted { $0.date > $1.date }
     }
 
@@ -2200,13 +2251,14 @@ enum Doctor {
             switch log.reading {
             case true?: add("Fn keys", "Input Monitoring", "rogkeyd reads the N-KEY keyboard.", .ok)
             case false?: add("Fn keys", "Input Monitoring", "rogkeyd has no access, so the Fn keys do nothing. In Input Monitoring remove rogkeyd (−), add it again (+), then restart it. A new rogkeyd build always needs this.",
-                             .fail, pref("Privacy_ListenEvent"))
+                             .fail, nil)
+                c[c.count - 1].guide = permissionGuide(service: "ListenEvent", pane: "Privacy_ListenEvent", name: "Input Monitoring")
             case nil: add("Fn keys", "Input Monitoring", "rogkeyd has not reported yet.", .info)
             }
-            if log.reading == false { add("Fn keys", "Restart rogkeyd", "After the grant, restart it so it opens the keyboard again.", .info, kickstart(rogkeydID, "rogkeyd")) }
             switch log.tap {
             case true?: add("Fn keys", "Accessibility (Fn+F9)", "Fn+F9 opens Displays and its Cmd+P is dropped. A Cmd+P you type still prints.", .ok)
-            case false?: add("Fn keys", "Accessibility (Fn+F9)", "Fn+F9 opens Displays, but its Cmd+P also reaches the app (Print dialog). Allow rogkeyd in Accessibility.", .warn, pref("Privacy_Accessibility"))
+            case false?: add("Fn keys", "Accessibility (Fn+F9)", "Fn+F9 opens Displays, but its Cmd+P also reaches the app (Print dialog). Allow rogkeyd in Accessibility.", .warn)
+                c[c.count - 1].guide = permissionGuide(service: "Accessibility", pane: "Privacy_Accessibility", name: "Accessibility")
             case nil: add("Fn keys", "Accessibility (Fn+F9)", "rogkeyd has not reported its event tap.", .info)
             }
         }
@@ -2238,9 +2290,10 @@ enum Doctor {
         let p = panics()
         if let last = p.first {
             let f = DateFormatter(); f.dateStyle = .short; f.timeStyle = .short
-            let day = Date().timeIntervalSince(last.date) < 86400
-            add("System", "Kernel panics", "\(p.count) in 7 days, last \(f.string(from: last.date))\(last.kext.map { ", in \($0)" } ?? "").",
-                day ? .warn : .info, Fix(label: "Show") { NSWorkspace.shared.activateFileViewerSelecting([last.url]) })
+            let day = Date().timeIntervalSince(last.date) < 86400, live = panicStillLoaded(last)
+            add("System", "Kernel panics", "\(p.count) in 7 days, last \(f.string(from: last.date))\(last.kext.map { ", in \($0)" } ?? "")"
+                + (live ? "." : ". That build is no longer loaded."),
+                day && live ? .warn : .info, Fix(label: "Show") { NSWorkspace.shared.activateFileViewerSelecting([last.url]) })
         } else { add("System", "Kernel panics", "None in 7 days.", .ok) }
         if st.batDesign > 0 && st.batFull > 0 {
             let h = Int((Double(st.batFull) / Double(st.batDesign) * 100).rounded())
@@ -2265,6 +2318,9 @@ enum Doctor {
 struct DoctorView: View {
     @ObservedObject var m: RogModel
     @State private var copied = false
+    static var initialOpen: String? = nil                       // the snapshot opens a guide
+    @State private var open: String? = DoctorView.initialOpen   // title of the check whose steps are shown
+    @State private var notes: [String: String] = [:]          // "check/step" -> what the step's button did
     var issues: Int { m.doctor.filter { $0.level >= .warn }.count }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -2319,7 +2375,16 @@ struct DoctorView: View {
                 Text(r.detail).font(.system(size: 11)).foregroundStyle(T.dim).fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 8)
-            if let f = r.fix {
+            if r.guide != nil {
+                Button { open = open == r.title ? nil : r.title } label: {
+                    HStack(spacing: 5) {
+                        Text(open == r.title ? "Hide steps" : "Fix it").font(.system(size: 11.5, weight: .medium))
+                        Image(systemName: open == r.title ? "chevron.up" : "chevron.down").font(.system(size: 8, weight: .bold))
+                    }
+                    .padding(.horizontal, 10).frame(height: 26)
+                }
+                .buttonStyle(RogButtonStyle(selected: open != r.title, cut: 6))
+            } else if let f = r.fix {
                 Button { f.run(); DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { m.runDoctor() } } label: {
                     Text(f.label).font(.system(size: 11.5, weight: .medium)).padding(.horizontal, 10).frame(height: 26)
                         .background(r.level >= .warn ? Color.clear : T.surface, in: Chamfer(cut: 6))
@@ -2330,6 +2395,43 @@ struct DoctorView: View {
         }
         .padding(.horizontal, 12).padding(.vertical, 10)
         .accessibilityElement(children: .combine)
+        .modifier(GuideBelow(r: r, shown: open == r.title, notes: $notes, recheck: recheck))
+    }
+    // after a step, look again (rogkeyd needs a moment to start and write its log)
+    func recheck() { DispatchQueue.main.asyncAfter(deadline: .now() + 3) { m.runDoctor() } }
+}
+
+struct GuideBelow: ViewModifier {
+    let r: DoctorCheck, shown: Bool
+    @Binding var notes: [String: String]
+    let recheck: () -> Void
+    func body(content: Content) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            content
+            if shown, let steps = r.guide {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(steps.indices, id: \.self) { i in
+                        let st = steps[i], key = "\(r.title)/\(i)"
+                        HStack(alignment: .top, spacing: 10) {
+                            Text("\(i + 1)").font(T.num(11)).foregroundStyle(T.text).frame(width: 20, height: 20)
+                                .background(T.surface, in: Circle()).overlay(Circle().stroke(T.line))
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(st.title).font(.system(size: 12, weight: .semibold)).foregroundStyle(T.text)
+                                Text(st.detail).font(.system(size: 11)).foregroundStyle(T.dim).fixedSize(horizontal: false, vertical: true)
+                                if let n = notes[key] { Text(n).font(.system(size: 11)).foregroundStyle(T.amber).fixedSize(horizontal: false, vertical: true) }
+                            }
+                            Spacer(minLength: 8)
+                            Button { notes[key] = st.run(); recheck() } label: {
+                                Text(st.button).font(.system(size: 11.5, weight: .medium)).padding(.horizontal, 10).frame(height: 26)
+                                    .background(T.surface, in: Chamfer(cut: 6)).overlay(Chamfer(cut: 6).stroke(T.line))
+                            }
+                            .buttonStyle(RogButtonStyle(cut: 6))
+                        }
+                    }
+                }
+                .padding(.leading, 40).padding(.trailing, 12).padding(.bottom, 12)
+            }
+        }
     }
 }
 
@@ -2607,6 +2709,16 @@ enum Snapshot {
         // the window is always dark: the main screen, then each dialog over it
         let shots: [(String, RogDialog?)] = [("1-main", nil), ("2-limits", .limits), ("3-fans", .fans), ("4-slash", .slash),
                                              ("5-battery", .battery), ("6-settings", .settings), ("7-doctor", .doctor)]
+        // the guided fix, drawn whether or not this machine needs it
+        var demo = DoctorCheck(group: "Fn keys", title: "Input Monitoring", detail: "rogkeyd has no access, so the Fn keys do nothing.", level: .fail)
+        demo.guide = Doctor.permissionGuide(service: "ListenEvent", pane: "Privacy_ListenEvent", name: "Input Monitoring")
+        let real = m.doctor
+        m.doctor = real.filter { $0.group != "Driver" && !($0.group == "Fn keys" && $0.title == "Input Monitoring") }
+        m.doctor.insert(demo, at: 0)
+        DoctorView.initialOpen = demo.title
+        m.dialog = .doctor
+        render(RogWindowView(m: m), size: NSSize(width: 1120, height: 0), dark: true, to: out.appendingPathComponent("window-7b-doctor-guide\(tag).png"))
+        DoctorView.initialOpen = nil; m.doctor = real
         for (name, d) in shots {
             m.dialog = d
             render(RogWindowView(m: m), size: NSSize(width: 1120, height: 0), dark: true,
@@ -2681,6 +2793,16 @@ func bench(seconds: Int) -> Int32 {
 let args = CommandLine.arguments
 if args.count >= 3 && args[1] == "--snapshot" {
     MainActor.assumeIsolated { Snapshot.run(dir: args[2], manual: args.contains("--manual"), offline: args.contains("--offline"), live: args.contains("--live")) }
+    exit(0)
+}
+if args.count >= 2 && args[1] == "--doctor" {             // the Doctor report on stdout (read only)
+    MainActor.assumeIsolated {
+        _ = NSApplication.shared
+        let s = Sensors.read()
+        let m = RogModel(preview: Asus.state(), tctl: s.tctl, watts: s.watts, curve: nil, gpuCurve: nil)
+        m.sound = Sound.state(); m.loginEnabled = LoginItem.enabled
+        print(Doctor.report(Doctor.run(m)), terminator: "")
+    }
     exit(0)
 }
 if args.count >= 2 && args[1] == "--bench" {
