@@ -5,7 +5,7 @@
 #ifndef ASUSWMI_ABI_H
 #define ASUSWMI_ABI_H
 
-#define ASUSWMI_ABI_VERSION 3
+#define ASUSWMI_ABI_VERSION 5
 
 enum {
     kAsusUcGetState  = 0,   // out: struct, uint32_t[ASUS_ST_COUNT]
@@ -14,6 +14,8 @@ enum {
                             //     (8 temperatures in °C, then 8 fan duties in %): the firmware's curve for that profile
     kAsusUcFanWrite  = 3,   // in: scalars { fan }, struct 16 bytes (same layout): custom curve, makes the fans "manual"
     kAsusUcFanReset  = 4,   // re-applies the current profile: firmware fan curves, power limits back to the profile's
+    kAsusUcKey       = 5,   // in: scalars { code }: an Fn key code from the N-KEY keyboard (HID report 0x5A), read by rogkeyd
+                            //     (ABI 4); handled as a hotkey, see AsusWmi.cpp
 };
 
 enum {                      // kAsusUcSet "what"
@@ -24,6 +26,7 @@ enum {                      // kAsusUcSet "what"
     ASUS_SET_CHARGE  = 5,   // %, battery charge end 20..100
     ASUS_SET_BACKLIGHT = 6, // EC brightness level 0..ASUS_ST_BACKLIGHT_MAX (AWMI.WMAA); not the OLED's: that is NullMoth's AUX path
     ASUS_SET_KBD     = 7,   // keyboard backlight 0..3 (N-KEY HID feature report 0x5A)
+    ASUS_SET_AURA    = 9,   // keyboard Aura mode: 0 static, 1 breathe, 2 strobe (N-KEY report 0x5D; single-color keyboard) (ABI 5)
     ASUS_SET_SLASH   = 8,   // Slash lighting: ASUS_SLASH_PACK(mode, brightness, interval); brightness 0 = off
 };
 
@@ -52,7 +55,9 @@ enum {                      // kAsusUcGetState words
     ASUS_ST_KBD,            // keyboard backlight 0..3 as last set (the keyboard cannot be read), 0xFFFFFFFF unknown
     ASUS_ST_SLASH,          // Slash setting as last set (ASUS_SLASH_PACK), 0xFFFFFFFF unknown
     ASUS_ST_HID,            // 1: the N-KEY keyboard (0b05:19b6) was found
-    ASUS_ST_COUNT = 27
+    ASUS_ST_AURA,           // Aura mode 0..2 as last set (ABI 5), 0xFFFFFFFF unknown
+    ASUS_ST_COUNT = 28,
+    ASUS_ST_COUNT_V3 = 27   // what ABI 3 / 4 clients ask for: they still get those words
 };
 
 #define ASUS_FL_AC         0x1u    // on AC power (ACPI0003 _PSR)

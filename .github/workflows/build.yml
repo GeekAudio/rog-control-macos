@@ -1,6 +1,6 @@
 name: build
 
-# Builds the AsusWmi and AmdCppc kexts, the RogControl app and the AmdCppcPolicy daemon (ad-hoc signed), and runs the
+# Builds the AsusWmi and AmdCppc kexts, the RogControl app, rogkeyd and the AmdCppcPolicy daemon (ad-hoc signed), and runs the
 # fan-curve decoding test. A tag "v*" publishes the zips and SHA256SUMS.txt as a GitHub release.
 on:
   push:
@@ -24,16 +24,17 @@ jobs:
       - name: Fan-curve decoding test
         run: bash scripts/test-rogcontrol.sh
 
-      - name: Build the app and the CPU policy daemon
+      - name: Build the app, rogkeyd and the CPU policy daemon
         run: |
           bash scripts/build-rogcontrol.sh
+          bash scripts/build-rogkeys.sh
           bash scripts/build-amdcppc-policy.sh
 
       - name: Package
         run: |
           mkdir -p dist
           for k in AsusWmi AmdCppc; do (cd build && zip -qry "../dist/$k.kext.zip" "$k.kext"); done
-          (cd build && zip -qry ../dist/RogControl.app.zip RogControl.app && zip -qj ../dist/AmdCppcPolicy.zip AmdCppcPolicy)
+          (cd build && zip -qry ../dist/RogControl.app.zip RogControl.app && zip -qry ../dist/rogkeyd.app.zip rogkeyd.app && zip -qj ../dist/AmdCppcPolicy.zip AmdCppcPolicy)
           cp LICENSE dist/
           (cd dist && shasum -a 256 *.zip LICENSE > SHA256SUMS.txt)
 

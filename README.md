@@ -20,9 +20,10 @@ boot without them (OpenCore picker, remove the kext from `config.plist`).
 
 | Part | Where | What it does |
 |---|---|---|
-| `AsusWmi.kext` | `kexts/AsusWmi` | Matches the ACPI `ATKD` device (`PNP0C14`, `_UID "ATK"`) and calls its WMI methods like `asus-wmi`: platform profile, PPT limits (range-checked for AC or battery), fan curves, fan speeds, charge limit, keyboard light (N-KEY HID report), Slash lighting, ATKD hotkeys |
+| `AsusWmi.kext` | `kexts/AsusWmi` | Matches the ACPI `ATKD` device (`PNP0C14`, `_UID "ATK"`) and calls its WMI methods like `asus-wmi`: platform profile, PPT limits (range-checked for AC or battery), fan curves, fan speeds, charge limit, keyboard light and Aura (N-KEY HID reports), Slash lighting, the Fn keys rogkeyd passes on (`kAsusUcKey`, ABI 5) |
 | `AmdCppc.kext` | `kexts/AmdCppc` | Ryzen AI 9 HX 370: Tctl and package power (`debug.amdcppc.sensors`), per-CPU clocks (`debug.amdcppc.freq`), CPPC boost and EPP controls |
-| `RogControl.app` | `macos/RogControl` | SwiftUI menu bar app plus a window (Performance, Battery, Lighting, General). Talks to AsusWmi through its user client, no sudo |
+| `RogControl.app` | `macos/RogControl` | SwiftUI menu bar app plus a window: mode, live readings, battery, Custom limits, lighting, sound, microphone and camera, and a Doctor that checks the whole setup. Talks to AsusWmi through its user client, no sudo. One copy per user |
+| `rogkeyd.app` | `macos/RogKeys` | LaunchAgent that reads the N-KEY Fn keys (vendor report 0x5A), which macOS drops, and hands them to AsusWmi; does mic mute, airplane mode, Fn+F9 and M4 itself. Needs Input Monitoring (and Accessibility for Fn+F9) |
 | `AmdCppcPolicy` | `macos/AmdCppcPolicy` | Root LaunchDaemon that applies the CPPC policy after boot and wake |
 
 ## Status
@@ -40,6 +41,9 @@ are untested; the power-limit ranges are the GA403WM's. Per-feature detail and t
 
 <p align="center"><img src="docs/images/rogcontrol-popover.png" alt="RogControl menu bar panel" width="320"></p>
 <p align="center"><em>Menu bar panel</em></p>
+
+<p align="center"><img src="docs/images/rogcontrol-doctor.png" alt="Doctor dialog: drivers, Fn keys, audio, microphone, camera and system checks" width="430">&nbsp;&nbsp;<img src="docs/images/rogcontrol-doctor-fix.png" alt="Doctor guided fix for rogkeyd's Input Monitoring permission" width="430"></p>
+<p align="center"><em>Doctor: every dependency in one list, and the guided fix for a missing permission</em></p>
 
 <p align="center"><img src="docs/images/rogcontrol-limits.png" alt="Custom limits dialog" width="430">&nbsp;&nbsp;<img src="docs/images/fan-curves.png" alt="Fan curves dialog" width="430"></p>
 <p align="center"><em>Custom limits dialog (burst, short boost, sustained in plain words) and the firmware fan curves</em></p>
@@ -60,6 +64,8 @@ are untested; the power-limit ranges are the GA403WM's. Per-feature detail and t
 
 | Release | Contents |
 |---|---|
+| [rogcontrol-v0.5.2](https://github.com/thanhnndev/rog-control-macos/releases/tag/rogcontrol-v0.5.2) | `RogControl-0.5.2.dmg`: Doctor (checks and guided fixes), Aura control, sound row on the grid, one copy per user. `AsusWmi-0.2.2.kext.zip` (Fn keys, Aura, the Fn+F7/F8 panic fix; ABI 5) and `rogkeyd-1.2.app.zip` (Fn keys reader); see [docs/FN-HOTKEYS.md](docs/FN-HOTKEYS.md) |
+| [rogcontrol-v0.4.0](https://github.com/thanhnndev/rog-control-macos/releases/tag/rogcontrol-v0.4.0) | `RogControl-0.4.0.dmg`: sound output, sound profile, microphone, Clear Mic and camera |
 | [rogcontrol-v0.3.3](https://github.com/thanhnndev/rog-control-macos/releases/tag/rogcontrol-v0.3.3) | `RogControl-0.3.3.dmg`: one-screen window with dialogs, no spare space, menu bar icon in the app badge style, steadier temperature and power readings; open it and drag the app into Applications. Kexts unchanged, still in `rog-v1.0` |
 | [rog-v1.0](https://github.com/thanhnndev/rog-control-macos/releases/tag/rog-v1.0) | `AsusWmi.kext`, `AmdCppc.kext`, `AmdCppcPolicy`, `RogControl.app`, `SHA256SUMS.txt`. Binaries copied unchanged from `kext-v1.1` of the EFI repo; same checksums |
 
@@ -73,6 +79,7 @@ bash scripts/build-amdcppc-policy.sh       # build/AmdCppcPolicy
 bash scripts/test-rogcontrol.sh            # fan-curve decoding, never writes hardware
 bash scripts/build-rogcontrol.sh           # build/RogControl.app
 bash scripts/build-rogcontrol.sh --install # copy to /Applications, start at login
+bash scripts/build-rogkeys.sh --install    # rogkeyd LaunchAgent (Fn keys); then grant Input Monitoring
 bash scripts/build-dmg.sh                  # build/RogControl-<version>.dmg, drag-to-Applications installer
 ```
 
@@ -89,12 +96,13 @@ back. It does not edit `config.plist`. AmdCppc and its policy daemon: [docs/CPU-
 * [docs/ASUSCTL-MACOS.md](docs/ASUSCTL-MACOS.md): feature map, WMI device ids, ABI, measurements.
 * [docs/rog-control-design.md](docs/rog-control-design.md): menu bar and window design decisions, fan-curve drawing rules.
 * [docs/CPU-POWER.md](docs/CPU-POWER.md): AmdCppc audit and the CPPC policy.
-* [docs/FN-HOTKEYS.md](docs/FN-HOTKEYS.md) (branch `dev/fn-hotkeys`), [docs/AUDIO-ROG.md](docs/AUDIO-ROG.md) (branch `dev/audio`).
+* [docs/FN-HOTKEYS.md](docs/FN-HOTKEYS.md): the Fn key map, rogkeyd, and why the keyboard driver is not replaced.
+* [docs/AUDIO-ROG.md](docs/AUDIO-ROG.md) (branch `dev/audio`).
 
 ## Branches
 
-* `main`: the shipped menu bar app and the two kexts.
-* `dev/fn-hotkeys`: mapping of the GA403WM Fn and M keys. Not merged.
+* `main`: the shipped menu bar app, rogkeyd and the two kexts.
+* `dev/fn-hotkeys`: an earlier Fn key attempt through ATKD WMI, which never fires on this machine. Superseded by rogkeyd; not merged.
 * `dev/audio`: a from-scratch rewrite of the app with an audio page, the RogAudio HAL plug-in and mic chain. Speakers were
   still silent in audible tests when the branch was last touched. Not merged.
 

@@ -35,9 +35,13 @@
 //   sysctl debug.asuswmi.slash[=<packed>]  Slash lighting, ASUS_SLASH_PACK(mode, brightness 0..3, interval 0..5) (report 0x5D)
 //   sysctl debug.asuswmi.key=<code>        emulates a hotkey through WMNB DEVS 0x00100021 (EC0.SKEY): 0x20 brightness up,
 //                                          0x10 down, 0xC4 / 0xC5 keyboard light up / down, 0xAE fan key (testing)
-// Hotkeys: the EC queues a code with ATKD.IANE and sends Notify (ATKD, 0xFF); _WED (0xFF) returns the queued codes. Handled
-// here: 0xC4 / 0xC5 keyboard light up / down (Fn+F3 / F2), 0xAE (Fn+F5) next profile, 0xB3 (Fn+F4) Slash on / off; every
-// code is logged in asus-log ("key xx").
+// Hotkeys: on the GA403WM every Fn key comes from the N-KEY keyboard as HID input report 0x5A, which macOS's keyboard dext
+// drops. rogkeyd (macos/RogKeys) reads that report and passes the code in through user client selector kAsusUcKey. The ATKD
+// path (Notify (ATKD, 0xFF), codes from _WED) stays for other models. Handled here: 0xC4 / 0xC5 keyboard light up / down
+// (Fn+F3 / F2), 0xAE (Fn+F5) next profile, 0xB3 (Fn+F4) Slash on / off, 0x6C (Fn+F11) sleep, and from the keyboard only
+// 0x10 / 0x20 (Fn+F7 / F8) brightness: sent as the firmware's Notify (LCD, 0x87 / 0x86) to the panel's ACPI device, where
+// BrightnessKeys listens. Every code is logged in asus-log ("key xx") and counted; rogkeyd does mic mute, M4 and Wi-Fi itself:
+//   sysctl debug.asuswmi.hotkey            (read) "<sequence> <last code>"
 //   sysctl debug.asuswmi.battery           ECOK, _BIF and _BST of BAT1 as the firmware returns them
 //   sysctl debug.asuswmi.ec_reg=1          runs EC0._REG (3, 1) (EmbeddedControl space available) if ECOK is still 0
 //   sysctl debug.asuswmi.dumpacpi=1        publishes the DSDT and SSDTs as registry properties acpi-DSDT, acpi-SSDT-<n>
@@ -49,6 +53,7 @@
 #include <IOKit/acpi/IOACPIPlatformExpert.h>
 #include <IOKit/IOBufferMemoryDescriptor.h>
 #include <IOKit/hid/IOHIDDevice.h>
+#include <IOKit/pwr_mgt/RootDomain.h>
 #include <kern/thread_call.h>
 #include <sys/sysctl.h>
 #include <stdarg.h>
@@ -134,6 +139,8 @@ public:
     IOReturn blSet(int lvl);
     // N-KEY keyboard (HID 0b05:19b6): backlight (feature report 0x5A) and Slash lighting (0x5D), sent as G-Helper does
     int kbdLevel = -1;
+    int auraMode = -1;                       // index into kAuraModes, -1 = not set since load
+    IOReturn auraSet(int idx);
     int64_t slashSet = -1;
     bool hidSeen = false;
     IOReturn hidFeature(const uint8_t *cmd, size_t n, size_t total);
@@ -142,9 +149,18 @@ public:
     // hotkeys: Notify (ATKD, 0xFF), codes from _WED (0xFF), handled on a thread call
     IONotifier *atkNotifier = nullptr;
     thread_call_t evCall = nullptr;
-    uint32_t lastKey = 0;
+    uint32_t lastKey = 0, keySequence = 0;
+    // codes from rogkeyd (user client): queued, handled on keyCall with `lock` held; bit 8 = from the N-KEY keyboard
+    thread_call_t keyCall = nullptr;
+    IOSimpleLock *keyQLock = nullptr;
+    static constexpr unsigned kKeyQLen = 16;
+    uint16_t keyQ[kKeyQLen];
+    unsigned keyQHead = 0, keyQTail = 0;
+    void keyQueue(uint32_t code);
+    void keyDrain();
     void events();
-    void hotkey(uint32_t code);
+    void hotkey(uint32_t code, bool keyboard = false);
+    IOACPIPlatformDevice *lcd = nullptr;     // the panel's ACPI device (VGA.LCD), for the brightness notifications
     bool battery(uint32_t out[4], char *txt, size_t txtLen);
     IOReturn ecReg();
     void findAcpi();
@@ -252,9 +268,12 @@ void AsusWmi::findAcpi()
     if (awmi && awmi->validateObject("WMAA") != kIOReturnSuccess) { awmi->release(); awmi = nullptr; }
     bat = acpiNamed("BAT1");
     ec = acpiNamed("EC0");
+    lcd = acpiNamed("LCD");                  // VGA.LCD (890M panel); PEGP.LCD0 on the NVIDIA side gets the same listeners
+    if (!lcd) lcd = acpiNamed("LCD0");
     uint32_t m = 0;
     if (awmi && wmaa(1, 2, 0, &m) && m > 0 && m <= 0xffff) blMaxLevel = m;   // mode 2: the maximum level (0xC8 here)
-    say("acpi: AWMI %s (backlight max %u), BAT1 %s, EC0 %s", awmi ? "yes" : "no", blMaxLevel, bat ? "yes" : "no", ec ? "yes" : "no");
+    say("acpi: AWMI %s (backlight max %u), BAT1 %s, EC0 %s, panel %s", awmi ? "yes" : "no", blMaxLevel, bat ? "yes" : "no",
+        ec ? "yes" : "no", lcd ? lcd->getName(IORegistryEntry::getPlane("IOACPIPlane")) : "no");
 }
 
 // AWMI.WMAA (instance 0, method, buffer { mode, value, ... }): method 1 = level (mode 0 get, 1 set, 2 max), method 2 =
@@ -346,6 +365,27 @@ IOReturn AsusWmi::kbdSet(int level)
     return r;
 }
 
+// G-Helper Aura.AuraMessage / MESSAGE_SET / MESSAGE_APPLY on report 0x5D (128 bytes), after the 5D "ASUS Tech.Inc." init.
+// The GA403 keyboard is single-color: only Static, Breathe and Strobe apply; red carries the level, speed is "normal".
+static const uint8_t kAuraModes[] = { 0x00, 0x01, 0x0A };
+static const char *const kAuraNames[] = { "static", "breathe", "strobe" };
+IOReturn AsusWmi::auraSet(int idx)
+{
+    if (idx < 0 || idx >= (int)sizeof(kAuraModes)) return kIOReturnBadArgument;
+    uint8_t init[15] = { 0x5D };
+    memcpy(init + 1, kAsusMagic, sizeof(kAsusMagic));
+    const uint8_t mode = kAuraModes[idx];
+    const uint8_t msg[13] = { 0x5D, 0xB3, 0x00, mode, 0xFF, 0x00, 0x00, 0xEB, 0x00, (uint8_t)(mode == 0x01 ? 1 : 0), 0xFF, 0x00, 0x00 };
+    const uint8_t set[5] = { 0x5D, 0xB5, 0x00, 0x00, 0x00 }, apply[2] = { 0x5D, 0xB4 };
+    IOReturn r = hidFeature(init, sizeof(init), 128);
+    if (r == kIOReturnSuccess) r = hidFeature(msg, sizeof(msg), 128);
+    if (r == kIOReturnSuccess) r = hidFeature(set, sizeof(set), 128);
+    if (r == kIOReturnSuccess) r = hidFeature(apply, sizeof(apply), 128);
+    if (r == kIOReturnSuccess) auraMode = idx;
+    say("aura %s -> %08x", kAuraNames[idx], r);
+    return r;
+}
+
 // G-Helper SlashDeviceAura (report 0x5D, 128 bytes) for this keyboard: wake up, enable, init, mode, options, save; off = disable.
 static const uint8_t kSlashCode[ASUS_SLASH_MODE_COUNT] = { 0x06, 0x10, 0x12, 0x13, 0x1D, 0x1A, 0x19, 0x25,
                                                            0x24, 0x26, 0x32, 0x33, 0x34, 0x42, 0x43, 0x44 };
@@ -379,22 +419,55 @@ IOReturn AsusWmi::slashApply(uint32_t v)
 // ---------------------------------------------------------------------------------------------------------------------------
 // Hotkeys
 // ---------------------------------------------------------------------------------------------------------------------------
-void AsusWmi::hotkey(uint32_t code)
+void AsusWmi::hotkey(uint32_t code, bool keyboard)
 {
     lastKey = code;
+    keySequence++;
     say("key %02x", code);
     switch (code) {
     case 0xC4: kbdSet(kbdLevel < 0 ? 1 : (kbdLevel < 3 ? kbdLevel + 1 : 3)); break;     // Fn+F3
     case 0xC5: kbdSet(kbdLevel < 0 ? 0 : (kbdLevel > 0 ? kbdLevel - 1 : 0)); break;     // Fn+F2
     case 0xAE: setValue(ASUS_SET_PROFILE, curProfile < 0 ? 1 : (curProfile + 1) % 3); break;   // Fn+F5: as asus-wmi
-    case 0xB3: {                                                                         // Fn+F4: Slash on / off
-        uint32_t s = slashSet >= 0 ? (uint32_t)slashSet : ASUS_SLASH_PACK(0, 0, 0);
-        slashApply(ASUS_SLASH_PACK(ASUS_SLASH_MODE(s), ASUS_SLASH_BRIGHT(s) ? 0 : 2, ASUS_SLASH_INTERVAL(s)));
+    case 0xB3: auraSet((auraMode + 1) % (int)sizeof(kAuraModes)); break;                 // Fn+F4: next Aura mode
+    case 0x10: case 0x20:                                                                // Fn+F7 / F8: brightness
+        if (keyboard && lcd) {     // ATKD models get the firmware's own Notify; only the keyboard's code needs one
+            UInt32 n = code == 0x20 ? 0x86 : 0x87;
+            lcd->messageClients(kIOACPIMessageDeviceNotification, &n, sizeof(n));
+        }
         break;
-    }
-    default: break;
+    case 0x6C:                                                                           // Fn+F11: sleep
+        if (IOPMrootDomain *pm = getPMRootDomain()) pm->receivePowerNotification(kIOPMSleepNow);
+        break;
+    default: break;                                                                      // RogControl reads the rest
     }
 }
+
+void AsusWmi::keyQueue(uint32_t code)
+{
+    if (!keyQLock || !keyCall || (code & 0xFF) == 0 || code > 0x1FF) return;
+    IOSimpleLockLock(keyQLock);
+    unsigned next = (keyQHead + 1) % kKeyQLen;
+    if (next != keyQTail) { keyQ[keyQHead] = (uint16_t)code; keyQHead = next; }   // full: drop the newest
+    IOSimpleLockUnlock(keyQLock);
+    thread_call_enter(keyCall);
+}
+
+void AsusWmi::keyDrain()
+{
+    for (;;) {
+        IOSimpleLockLock(keyQLock);
+        bool empty = keyQHead == keyQTail;
+        uint16_t code = empty ? 0 : keyQ[keyQTail];
+        if (!empty) keyQTail = (keyQTail + 1) % kKeyQLen;
+        IOSimpleLockUnlock(keyQLock);
+        if (empty) return;
+        IOLockLock(lock);
+        hotkey(code & 0xFF, code & 0x100);
+        IOLockUnlock(lock);
+    }
+}
+
+static void keyThread(thread_call_param_t p0, thread_call_param_t) { ((AsusWmi *)p0)->keyDrain(); }
 
 void AsusWmi::events()
 {
@@ -498,6 +571,8 @@ IOReturn AsusWmi::setValue(int what, int v)
         return kbdSet(v);
     case ASUS_SET_SLASH:
         return v < 0 ? kIOReturnBadArgument : slashApply((uint32_t)v);
+    case ASUS_SET_AURA:
+        return auraSet(v);
     default:
         return kIOReturnUnsupported;
     }
@@ -588,6 +663,7 @@ void AsusWmi::getState(uint32_t st[ASUS_ST_COUNT])
     st[ASUS_ST_KBD] = kbdLevel >= 0 ? (uint32_t)kbdLevel : ~0u;
     st[ASUS_ST_SLASH] = slashSet >= 0 ? (uint32_t)slashSet : ~0u;
     st[ASUS_ST_HID] = hidSeen ? 1 : 0;
+    st[ASUS_ST_AURA] = auraMode >= 0 ? (uint32_t)auraMode : ~0u;
 }
 
 // getACPITableData() is protected; this type is never instantiated, it only makes the (virtual) call reachable.
@@ -659,13 +735,14 @@ IOReturn AsusWmiUC::externalMethod(uint32_t selector, IOExternalMethodArguments 
     IOReturn r;
     switch (selector) {
     case kAsusUcGetState: {
-        if (!a->structureOutput || a->structureOutputSize < ASUS_ST_COUNT * sizeof(uint32_t)) return kIOReturnBadArgument;
+        if (!a->structureOutput || a->structureOutputSize < ASUS_ST_COUNT_V3 * sizeof(uint32_t)) return kIOReturnBadArgument;
         uint32_t st[ASUS_ST_COUNT];
         IOLockLock(drv->lock);
         drv->getState(st);
         IOLockUnlock(drv->lock);
-        memcpy(a->structureOutput, st, sizeof(st));
-        a->structureOutputSize = sizeof(st);
+        uint32_t n = a->structureOutputSize < sizeof(st) ? a->structureOutputSize : (uint32_t)sizeof(st);   // older clients: fewer words
+        memcpy(a->structureOutput, st, n);
+        a->structureOutputSize = n;
         return kIOReturnSuccess;
     }
     case kAsusUcSet:
@@ -692,6 +769,10 @@ IOReturn AsusWmiUC::externalMethod(uint32_t selector, IOExternalMethodArguments 
         IOLockUnlock(drv->lock);
         return r;
     }
+    case kAsusUcKey:
+        if (a->scalarInputCount != 1 || a->scalarInput[0] == 0 || a->scalarInput[0] > 0xFF) return kIOReturnBadArgument;
+        drv->keyQueue((uint32_t)a->scalarInput[0] | 0x100);
+        return kIOReturnSuccess;
     case kAsusUcFanReset:
         IOLockLock(drv->lock);
         r = drv->fanReset();
@@ -725,7 +806,7 @@ static void buildStatus()
                           gSelf->fanCustom, gSelf->curProfile, gSelf->curCharge);
     uint32_t bl = 0;
     if (gSelf->blGet(&bl)) n += (size_t)snprintf(gStatus + n, sizeof(gStatus) - n, " backlight=%u/%u", bl, gSelf->blMaxLevel);
-    n += (size_t)snprintf(gStatus + n, sizeof(gStatus) - n, " kbd=%d slash=%lld last_key=%02x", gSelf->kbdLevel,
+    n += (size_t)snprintf(gStatus + n, sizeof(gStatus) - n, " kbd=%d aura=%d slash=%lld last_key=%02x", gSelf->kbdLevel, gSelf->auraMode,
                           (long long)gSelf->slashSet, gSelf->lastKey);
     for (int i = 0; i < 3; i++) {
         static const char *const nm[3] = { "spl", "sppt", "fppt" };
@@ -750,6 +831,16 @@ static int status_sysctl SYSCTL_HANDLER_ARGS
     return e;
 }
 
+static int hotkey_sysctl SYSCTL_HANDLER_ARGS
+{
+    if (!gSelf) return ENODEV;
+    char value[48];
+    IOLockLock(gSelf->lock);
+    snprintf(value, sizeof(value), "%u %u", gSelf->keySequence, gSelf->lastKey);
+    IOLockUnlock(gSelf->lock);
+    return SYSCTL_OUT(req, value, strlen(value) + 1);
+}
+
 enum { W_DUMP = 100, W_FAN_CUSTOM = 101, W_EC_REG = 102, W_KEY = 103 };
 
 static int write_sysctl SYSCTL_HANDLER_ARGS
@@ -766,6 +857,7 @@ static int write_sysctl SYSCTL_HANDLER_ARGS
     else if (what == W_FAN_CUSTOM) v = gSelf->fanCustom;
     else if (what == ASUS_SET_KBD) v = gSelf->kbdLevel;
     else if (what == ASUS_SET_SLASH) v = (int)gSelf->slashSet;
+    else if (what == ASUS_SET_AURA) v = gSelf->auraMode;
     else if (what == W_KEY) v = (int)gSelf->lastKey;
     IOLockUnlock(gSelf->lock);
     int e = sysctl_handle_int(oidp, &v, 0, req);
@@ -818,6 +910,7 @@ static int battery_sysctl SYSCTL_HANDLER_ARGS
 
 SYSCTL_NODE(_debug, OID_AUTO, asuswmi, CTLFLAG_RW | CTLFLAG_LOCKED, 0, "AsusWmi");
 SYSCTL_PROC(_debug_asuswmi, OID_AUTO, status, CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_LOCKED, nullptr, 0, status_sysctl, "A", "");
+SYSCTL_PROC(_debug_asuswmi, OID_AUTO, hotkey, CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_LOCKED, nullptr, 0, hotkey_sysctl, "A", "sequence and last hotkey code");
 SYSCTL_PROC(_debug_asuswmi, OID_AUTO, profile, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, nullptr, ASUS_SET_PROFILE, write_sysctl, "I", "");
 SYSCTL_PROC(_debug_asuswmi, OID_AUTO, fan_custom, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, nullptr, W_FAN_CUSTOM, write_sysctl, "I", "");
 SYSCTL_PROC(_debug_asuswmi, OID_AUTO, ppt_spl, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, nullptr, ASUS_SET_SPL, write_sysctl, "I", "");
@@ -830,15 +923,16 @@ SYSCTL_PROC(_debug_asuswmi, OID_AUTO, backlight, CTLTYPE_INT | CTLFLAG_RW | CTLF
 SYSCTL_PROC(_debug_asuswmi, OID_AUTO, battery, CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_LOCKED, nullptr, 0, battery_sysctl, "A", "");
 SYSCTL_PROC(_debug_asuswmi, OID_AUTO, ec_reg, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, nullptr, W_EC_REG, write_sysctl, "I", "");
 SYSCTL_PROC(_debug_asuswmi, OID_AUTO, kbd, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, nullptr, ASUS_SET_KBD, write_sysctl, "I", "");
+SYSCTL_PROC(_debug_asuswmi, OID_AUTO, aura, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, nullptr, ASUS_SET_AURA, write_sysctl, "I", "");
 SYSCTL_PROC(_debug_asuswmi, OID_AUTO, slash, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, nullptr, ASUS_SET_SLASH, write_sysctl, "I", "");
 SYSCTL_PROC(_debug_asuswmi, OID_AUTO, key, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, nullptr, W_KEY, write_sysctl, "I", "");
 
 static struct sysctl_oid *const kOids[] = {
-    &sysctl__debug_asuswmi, &sysctl__debug_asuswmi_status, &sysctl__debug_asuswmi_profile, &sysctl__debug_asuswmi_fan_custom,
+    &sysctl__debug_asuswmi, &sysctl__debug_asuswmi_status, &sysctl__debug_asuswmi_hotkey, &sysctl__debug_asuswmi_profile, &sysctl__debug_asuswmi_fan_custom,
     &sysctl__debug_asuswmi_ppt_spl, &sysctl__debug_asuswmi_ppt_sppt, &sysctl__debug_asuswmi_ppt_fppt,
     &sysctl__debug_asuswmi_charge_limit, &sysctl__debug_asuswmi_dumpacpi, &sysctl__debug_asuswmi_probe,
     &sysctl__debug_asuswmi_backlight, &sysctl__debug_asuswmi_battery, &sysctl__debug_asuswmi_ec_reg,
-    &sysctl__debug_asuswmi_kbd, &sysctl__debug_asuswmi_slash, &sysctl__debug_asuswmi_key,
+    &sysctl__debug_asuswmi_kbd, &sysctl__debug_asuswmi_aura, &sysctl__debug_asuswmi_slash, &sysctl__debug_asuswmi_key,
 };
 
 bool AsusWmi::start(IOService *provider)
@@ -857,6 +951,8 @@ bool AsusWmi::start(IOService *provider)
     evCall = thread_call_allocate(evThread, this);
     if (evCall) atkNotifier = atk->registerInterest(gIOGeneralInterest, atkNotify, this);
     say("hotkeys %s", atkNotifier ? "hooked" : "not hooked");
+    keyQLock = IOSimpleLockAlloc();
+    keyCall = keyQLock ? thread_call_allocate(keyThread, this) : nullptr;
     char bt[256];
     uint32_t b4[4];
     battery(b4, bt, sizeof(bt));
@@ -873,11 +969,14 @@ void AsusWmi::stop(IOService *provider)
     for (int i = (int)(sizeof(kOids) / sizeof(kOids[0])) - 1; i >= 0; i--) sysctl_unregister_oid(kOids[i]);
     if (atkNotifier) { atkNotifier->remove(); atkNotifier = nullptr; }
     if (evCall) { thread_call_cancel_wait(evCall); thread_call_free(evCall); evCall = nullptr; }
+    if (keyCall) { thread_call_cancel_wait(keyCall); thread_call_free(keyCall); keyCall = nullptr; }
+    if (keyQLock) { IOSimpleLockFree(keyQLock); keyQLock = nullptr; }
     gSelf = nullptr;
     if (acad) { acad->release(); acad = nullptr; }
     if (awmi) { awmi->release(); awmi = nullptr; }
     if (bat) { bat->release(); bat = nullptr; }
     if (ec) { ec->release(); ec = nullptr; }
+    if (lcd) { lcd->release(); lcd = nullptr; }
     if (lock) { IOLockFree(lock); lock = nullptr; }
     IOService::stop(provider);
 }
