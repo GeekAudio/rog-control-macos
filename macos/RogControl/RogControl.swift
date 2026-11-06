@@ -2664,6 +2664,7 @@ enum Snapshot {
         st.gpuMux = 1; st.dgpu = 0; st.baseTgp = 55
         st.batDesign = 4580; st.batFull = 4132; st.batNow = 2440; st.batState = 0; st.batRate = 0
         st.lighting = true; st.kbd = 2; st.slash = Slash(mode: 7, bright: 2, interval: 1).packed; st.hid = true
+        st.abi = Asus.abi; st.hasAura = true; st.aura = 1
         let m = RogModel(preview: st, tctl: 78, watts: 46.8,
                          curve: [43, 68, 70, 72, 74, 76, 78, 255, 1, 6, 8, 13, 18, 22, 32, 32],
                          gpuCurve: [43, 67, 68, 70, 70, 70, 70, 255, 1, 6, 8, 13, 18, 22, 32, 32])

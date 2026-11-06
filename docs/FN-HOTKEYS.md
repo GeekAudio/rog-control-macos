@@ -29,13 +29,26 @@ macOS's keyboard driver (the AppleUserHIDEventService dext) drops page 0xFF31, a
 - **rogkeyd** (`macos/RogKeys`, LaunchAgent `com.itlmt7925.rogkeyd`, `scripts/build-rogkeys.sh --install`) opens the
   keyboard with IOHIDManager and reads reports 0x5A and 0x03. It does mic mute, M4 and Wi-Fi itself and passes every code
   to AsusWmi through user client selector `kAsusUcKey` (ABI 4). Reading a keyboard needs **Input Monitoring** for
-  `~/Library/Application Support/RogControl/rogkeyd.app`, granted once. macOS ties the grant to the binary, so the install
-  keeps an unchanged binary. Log: `~/Library/Logs/rogkeyd.log`.
-- **AsusWmi 0.2.0** handles the keyboard light, Slash, profile and sleep, plus brightness. For brightness it sends the
+  `~/Library/Application Support/RogControl/rogkeyd.app`, granted once; Fn+F9's event tap needs **Accessibility**. macOS
+  ties both grants to the binary, so the install keeps an unchanged binary and a new build needs them again. Log:
+  `~/Library/Logs/rogkeyd.log`.
+- **AsusWmi 0.2.2** handles the keyboard light, Aura, profile and sleep, plus brightness. For brightness it sends the
   ACPI notification the firmware would send to the panel device, which BrightnessKeys already listens to. It counts every
   key in `sysctl debug.asuswmi.hotkey` (`<sequence> <code>`), and RogControl refreshes when that count moves.
 
 Undo: `scripts/build-rogkeys.sh --uninstall`. The AsusWmi key selector does nothing without rogkeyd.
+
+## Install and check
+
+1. AsusWmi 0.2.2 in `EFI/OC/Kexts` (`scripts/macos-install-kext.sh AsusWmi`), reboot.
+2. `bash scripts/build-rogkeys.sh --install` (or unzip `rogkeyd-1.2.app.zip` from the release into
+   `~/Library/Application Support/RogControl/` and run the script's `--install`, which also writes the LaunchAgent).
+3. ROG Control > Doctor. Under Fn keys, **Fix it** walks through the grants: it resets rogkeyd's stale entry
+   (`tccutil reset ListenEvent com.itlmt7925.rogkeyd`) so macOS asks again, opens the Settings pane with `rogkeyd.app` shown
+   in Finder, then restarts rogkeyd and checks again. The same steps exist for Accessibility.
+4. Press Fn+F2: Doctor's "Keys reaching AsusWmi" counts up.
+
+`RogControl --doctor` prints the same report in a terminal.
 
 ## Panic on Fn+F7 / F8 with AsusWmi 0.2.0 (2026-11-05 21:39)
 

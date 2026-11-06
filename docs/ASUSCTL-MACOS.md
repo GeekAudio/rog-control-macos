@@ -151,6 +151,13 @@ for checking what `WMNB` does with each device id on this BIOS, and for the EC f
   keyboard without Input Monitoring (IOHIDDeviceOpen 0xe00002e2), so AsusWmi sends them from the kernel
   (`IOHIDDevice::setReport`): `debug.asuswmi.kbd`, `debug.asuswmi.slash`, ABI 3 (`ASUS_SET_KBD`, `ASUS_SET_SLASH`).
   RogControl stores both and sends them at start and after wake.
+* Aura (ABI 5, AsusWmi 0.2.2): G-Helper `AuraMessage` on report 0x5D after its `"ASUS Tech.Inc."` init:
+  `B3 00 <mode> FF 00 00 EB 00 <breathe?1:0> FF 00 00`, then `B5 00 00 00` and `B4`. The GA403 keyboard is single-color,
+  so only Static (0), Breathe (1) and Strobe (0x0A) are offered. `ASUS_SET_AURA` 0..2, `debug.asuswmi.aura`, state word 27.
+  The state read now returns as many words as the client asks for (27 for ABI 3 / 4 apps, 28 for ABI 5).
+* ABI 4 (AsusWmi 0.2.0): `kAsusUcKey`, an Fn key code from rogkeyd, queued and handled on a thread call
+  ([FN-HOTKEYS.md](FN-HOTKEYS.md)). 0.2.0 had a ring overflow (wrapped at 32 bytes on 16 entries) that panicked on Fn+F7/F8;
+  fixed in 0.2.1.
 * Build: `IOHIDDescriptorParser.h` includes `<MacTypes.h>` when `__has_include` finds one, which pulled the host SDK's
   user-space header in; `scripts/build.sh` now compiles with `-nostdlibinc`.
 * **OLED brightness**: the brightness slider appears with NullMoth 1.14 (NVKMS registers the backlight from NBCI `_DSM`
