@@ -83,7 +83,7 @@ bash scripts/build-rogkeys.sh --install    # rogkeyd LaunchAgent (Fn keys); then
 bash scripts/build-dmg.sh                  # build/RogControl-<version>.dmg, drag-to-Applications installer
 ```
 
-CI builds the same on `macos-14` and uploads the zips (ad-hoc signed; nothing is notarized).
+CI builds the same on `macos-15` and uploads the zips (ad-hoc signed; nothing is notarized).
 
 ## Install the kexts
 
