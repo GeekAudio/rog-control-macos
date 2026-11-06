@@ -82,7 +82,7 @@ bash scripts/build-rogkeys.sh --install    # LaunchAgent rogkeyd (phím Fn); sau
 bash scripts/build-dmg.sh                  # build/RogControl-<version>.dmg, kéo thả vào Applications
 ```
 
-CI build tương tự trên `macos-14` và tải lên các file zip (ký ad-hoc, không notarize).
+CI build tương tự trên `macos-15` và tải lên các file zip (ký ad-hoc, không notarize).
 
 ## Cài kext
 
