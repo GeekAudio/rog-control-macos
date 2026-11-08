@@ -72,4 +72,4 @@ sudo mkdir -p "$B"
 TS=$(date +%Y%m%d-%H%M%S)
 [ -d "$K/$NAME.kext" ] && sudo mv "$K/$NAME.kext" "$B/$NAME.kext.$TS"
 sudo cp -R "$STAGE/$NAME.kext" "$K/"
-echo "installed $K/$NAME.kext (old one: $B/$NAME.kext.$TS); reboot to load it. Undo: $0 --undo $NAME"
+echo "已安装 ${K}/${NAME}.kext（旧版备份在 ${B}/${NAME}.kext.${TS}）；重启后加载。回滚：$0 --undo ${NAME}"

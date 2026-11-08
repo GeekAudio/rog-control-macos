@@ -43,7 +43,7 @@ build_kext() {
   done
   clang++ -arch x86_64 -mmacosx-version-min="$LINK_MIN" -nostdlib -Xlinker -kext -Xlinker -no_data_const \
     -L"$SDK_DIR/Library/x86_64" -lkmodc++ -lkmod -lcc_kext "${objs[@]}" -o "$out/Contents/MacOS/$name"
-  echo "built $out"
+  echo "已生成 $out"
   file "$out/Contents/MacOS/$name"
   echo "--- undefined symbols ($name)"
   nm -um "$out/Contents/MacOS/$name" || true

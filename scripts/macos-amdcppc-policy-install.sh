@@ -26,4 +26,4 @@ PY
 chown root:wheel "$PLIST"; chmod 644 "$PLIST"
 plutil -lint "$PLIST"
 launchctl bootstrap system "$PLIST"
-echo 'Installed CPU policy service; log /var/log/amdcppc-policy.log'
+echo "已安装 CPU 策略服务；日志 /var/log/amdcppc-policy.log"

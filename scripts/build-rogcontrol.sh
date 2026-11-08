@@ -22,7 +22,7 @@ else
 fi
 swiftc -O -target x86_64-apple-macos13.0 macos/RogControl/RogControl.swift -o "$APP/Contents/MacOS/RogControl" -framework IOKit -framework SwiftUI -framework CoreAudio -framework CoreMediaIO
 codesign --force --sign - "$APP" >/dev/null
-echo "built $APP"
+echo "已生成 $APP"
 if [ "${1:-}" = "--install" ]; then
   pkill -x RogControl 2>/dev/null || true
   rm -rf /Applications/RogControl.app

@@ -1,0 +1,199 @@
+name: 发布
+
+# 推送 v* 标签，或在 Actions 页面手动填一个版本号，都会自动完成：
+#   编译内核扩展 → 跑测试 → 编译应用与守护进程 → 打 DMG 与 zip → 生成校验和 → 创建 GitHub Release（中文说明）。
+# 手动触发时版本号会写进 Info.plist（仅本次构建），标签指向触发时的 main。
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本号，例如 0.6.0（会自动补上 v 前缀）"
+        required: true
+        type: string
+      prerelease:
+        description: "标记为预发布版本"
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: 编译打包
+    runs-on: macos-15
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      tag: ${{ steps.ver.outputs.tag }}
+      prerelease: ${{ steps.ver.outputs.prerelease }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 解析版本号
+        id: ver
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_PRE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            V="${INPUT_VERSION#v}"
+            T="v${V}"
+            P="$INPUT_PRE"
+          else
+            T="$REF_NAME"
+            V="${T#v}"
+            P=false
+          fi
+          case "$V" in
+            ""|*[!0-9.]*) echo "版本号不合法：$V" >&2; exit 1 ;;
+          esac
+          {
+            echo "tag=$T"
+            echo "version=$V"
+            echo "prerelease=$P"
+          } >> "$GITHUB_OUTPUT"
+          echo "版本 ${V}，标签 ${T}，预发布 ${P}"
+
+      - name: 把版本号写进 Info.plist
+        env:
+          V: ${{ steps.ver.outputs.version }}
+          B: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $V" macos/RogControl/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $B" macos/RogControl/Info.plist
+          plutil -lint macos/RogControl/Info.plist
+
+      - name: 编译内核扩展（AsusWmi、AmdCppc）
+        run: bash scripts/build.sh
+
+      - name: 风扇曲线解码测试
+        run: bash scripts/test-rogcontrol.sh
+
+      - name: 编译应用、Fn 键守护进程与 CPU 策略守护进程
+        run: |
+          bash scripts/build-rogcontrol.sh
+          bash scripts/build-rogkeys.sh
+          bash scripts/build-amdcppc-policy.sh
+
+      - name: 打包 DMG 与组件压缩包
+        run: bash scripts/package.sh
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+          retention-days: 7
+          if-no-files-found: error
+
+  release:
+    name: 创建 Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码（需要历史来生成改动列表）
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 取回产物
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - name: 生成中文发布说明
+        env:
+          V: ${{ needs.build.outputs.version }}
+          T: ${{ needs.build.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          PREV=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)
+          if [ -n "$PREV" ]; then
+            RANGE="${PREV}..HEAD"
+            COMPARE="**完整对比**：https://github.com/${REPO}/compare/${PREV}...${T}"
+          else
+            RANGE="HEAD"
+            COMPARE=""
+          fi
+
+          {
+            echo "## ROG 控制中心 · macOS 中文版 v${V}"
+            echo
+            echo "面向 **ASUS ROG Zephyrus G14（GA403WM）** 黑苹果的 macOS 控制中心：性能模式、CPU 功耗上限、风扇曲线、"
+            echo "电池充电上限、键盘背光与 Slash 灯效，全部由菜单栏应用操作，底层是两个内核扩展。"
+            echo
+            echo "> 本仓库是 [thanhnndev/rog-control-macos](https://github.com/thanhnndev/rog-control-macos) 的简体中文分支："
+            echo "> 界面与文档已汉化，构建与发布由 GitHub Actions 自动完成。"
+            echo
+            echo "### 安装"
+            echo
+            echo "1. **内核扩展**（必需，装完要重启）：解压 \`AsusWmi.kext.zip\`，把 \`AsusWmi.kext\` 放进 \`EFI/OC/Kexts\`，"
+            echo "   在 \`config.plist\` 的 \`Kernel › Add\` 里加一条，重启。"
+            echo "2. **应用**：打开 \`RogControl-${V}.dmg\`，把「ROG Control」拖进「应用程序」。"
+            echo "   首次打开被系统拦截时：点「完成」→ 系统设置 › 隐私与安全性 › 安全性 →「仍要打开」→ 输入密码 → 再点「打开」。"
+            echo "3. **Fn 功能键**（可选）：解压 \`rogkeyd.app.zip\`，用 \`scripts/build-rogkeys.sh --install\` 安装，"
+            echo "   再到「系统设置 › 隐私与安全性 › 输入监控」里允许 rogkeyd。"
+            echo
+            echo "### 附件"
+            echo
+            echo "| 文件 | 说明 |"
+            echo "|---|---|"
+            echo "| \`RogControl-${V}.dmg\` | 菜单栏应用，拖进「应用程序」即可 |"
+            echo "| \`AsusWmi.kext.zip\` | 驱动：性能模式、功耗上限、风扇、充电上限、灯效、Fn 键 |"
+            echo "| \`AmdCppc.kext.zip\` | 驱动：锐龙温度与封装功耗读数、每核频率 |"
+            echo "| \`rogkeyd.app.zip\` | Fn 功能键读取守护进程 |"
+            echo "| \`AmdCppcPolicy.zip\` | 开机后应用 CPPC 策略的 LaunchDaemon |"
+            echo "| \`SHA256SUMS.txt\` | 以上文件的 SHA-256 校验和 |"
+            echo
+            echo "### 校验"
+            echo
+            echo '```bash'
+            echo "shasum -a 256 -c SHA256SUMS.txt"
+            echo '```'
+            echo
+            echo "### 本次改动"
+            echo
+            git log -n 60 --no-merges --pretty=format:"- %s（%h）" "$RANGE"
+            echo
+            if [ -n "$COMPARE" ]; then
+              echo
+              echo "$COMPARE"
+            fi
+          } > NOTES.md
+
+          echo "----- 发布说明预览 -----"
+          cat NOTES.md
+
+      - name: 创建 Release 并上传产物
+        env:
+          GH_TOKEN: ${{ github.token }}
+          T: ${{ needs.build.outputs.tag }}
+          V: ${{ needs.build.outputs.version }}
+          PRE: ${{ needs.build.outputs.prerelease }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          ARGS=(--title "ROG 控制中心 macOS 中文版 v${V}" --notes-file NOTES.md --repo "$REPO")
+          if [ "$PRE" = "true" ]; then ARGS+=(--prerelease); fi
+          # 标签不存在时（手动触发）就地创建，指向当前提交
+          if ! git rev-parse --verify --quiet "refs/tags/${T}" >/dev/null; then
+            ARGS+=(--target "$GITHUB_SHA")
+          fi
+          gh release create "$T" dist/* "${ARGS[@]}"
+          echo "已发布：https://github.com/${REPO}/releases/tag/${T}"

@@ -22,7 +22,7 @@ cp macos/RogKeys/Info.plist "$APP/Contents/Info.plist"
 swiftc -O -target x86_64-apple-macos13.0 macos/RogKeys/rogkeyd.swift -o "$APP/Contents/MacOS/rogkeyd" \
   -framework IOKit -framework CoreAudio -framework CoreWLAN -framework AppKit -framework ApplicationServices
 codesign --force --sign - --identifier com.itlmt7925.rogkeyd "$APP" >/dev/null
-echo "built $APP"
+echo "已生成 $APP"
 [ "${1:-}" = "--install" ] || exit 0
 if [ -f "$DEST/Contents/MacOS/rogkeyd" ] && cmp -s "$APP/Contents/MacOS/rogkeyd" "$DEST/Contents/MacOS/rogkeyd"; then
   echo "installed rogkeyd is the same build: kept (Input Monitoring grant stays)"
@@ -38,4 +38,4 @@ plistlib.dump({"Label": "com.itlmt7925.rogkeyd", "ProgramArguments": [exe], "Run
 PY
 launchctl bootout "gui/$(id -u)/com.itlmt7925.rogkeyd" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
-echo "started (log ~/Library/Logs/rogkeyd.log)"
+echo "已启动（日志 ~/Library/Logs/rogkeyd.log）"

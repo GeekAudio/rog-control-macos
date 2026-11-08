@@ -40,8 +40,8 @@ struct AsusState {
 
 // Slash lighting (asuswmi_abi.h ASUS_SLASH_*): mode index, brightness 0..3 (0 = off), interval 0..5
 struct Slash: Equatable {
-    static let modes = ["Static", "Bounce", "Slash", "Loading", "Bit Stream", "Transmission", "Flow", "Flux",
-                        "Phantom", "Spectrum", "Hazard", "Interfacing", "Ramp", "Game Over", "Start", "Buzzer"]
+    static let modes = ["静态", "弹跳", "斜切", "加载", "比特流", "传输", "流动", "通量",
+                        "幻影", "光谱", "警示", "接口", "斜坡", "游戏结束", "启动", "蜂鸣"]
     var mode = 2, bright = 2, interval = 0
     var packed: Int { mode | (bright << 8) | (interval << 12) }
     init(mode: Int = 2, bright: Int = 2, interval: Int = 0) { self.mode = mode; self.bright = bright; self.interval = interval }
@@ -155,6 +155,20 @@ enum Sensors {
     }
 }
 
+// ---- 机型标识 ----------------------------------------------------------------------------------------------------------------
+// 标题栏与设置里显示的机型。**没法自动识别**：黑苹果的 SMBIOS 是伪装的，hw.model / IORegistry 的 product-name 只会返回伪装
+// 出来的型号（例如 iMac20,2），拿不到真实的华硕机型名。所以这里给一份可覆盖的常量，默认值对应本项目的参考机型：
+//   defaults write com.itlmt7925.RogControl machine.name  -string "ROG Strix G16"
+//   defaults write com.itlmt7925.RogControl machine.model -string "G614JV"
+// 注意：功耗上限的范围是按 GA403WM 标定的，换机型前请先确认范围（见 docs/ASUSCTL-MACOS.md）。
+enum Machine {
+    static let name = UserDefaults.standard.string(forKey: "machine.name") ?? "Zephyrus G14"
+    static let model = UserDefaults.standard.string(forKey: "machine.model") ?? "GA403WM"
+    static var line: String { "\(name) · \(model)" }
+    // 当前 SMBIOS 伪装成的型号；黑苹果上它与真实机型无关，只在设置里用于说明
+    static var smbios: String? { Sensors.string("hw.model") }
+}
+
 // ---- modes and settings ------------------------------------------------------------------------------------------------------
 // ---- sound, microphone, camera ------------------------------------------------------------------------------------------------
 // RogAudio (installed on its own: RogAudio.driver + rogaudiod) adds "ROG Speakers", a sound profile chain in front of the built-in
@@ -165,7 +179,7 @@ enum Sensors {
 struct AudioDevice: Identifiable, Equatable {
     let id: AudioObjectID, uid: String, name: String, builtin: Bool
     var isRogSpeakers: Bool { uid == Sound.speakersUID }
-    var label: String { isRogSpeakers ? "ROG Speakers" : builtin ? "Built-in, no profile" : name }
+    var label: String { isRogSpeakers ? "ROG Speakers" : builtin ? "内置扬声器（无音效）" : name }
 }
 
 struct SoundState {
@@ -293,14 +307,14 @@ enum Camera {
         let nameOK = CMIOObjectGetPropertyData(cam, &na, 0, nil, UInt32(MemoryLayout<Unmanaged<CFString>?>.size), &used, &name) == 0
         var ra = addr(kCMIODevicePropertyDeviceIsRunningSomewhere), run: UInt32 = 0
         _ = CMIOObjectGetPropertyData(cam, &ra, 0, nil, 4, &used, &run)
-        return (nameOK ? (name?.takeRetainedValue() as String?) ?? "Camera" : "Camera", run != 0)
+        return (nameOK ? (name?.takeRetainedValue() as String?) ?? "摄像头" : "摄像头", run != 0)
     }
 }
 
 enum Mode: String, CaseIterable, Identifiable {
     case silent, performance, turbo, manual
     var id: String { rawValue }
-    var title: String { ["silent": "Silent", "performance": "Performance", "turbo": "Turbo", "manual": "Custom"][rawValue]! }   // manual is shown as Custom
+    var title: String { ["silent": "静音", "performance": "性能", "turbo": "增强", "manual": "自定义"][rawValue]! }   // manual is shown as Custom
     var symbol: String {
         // one family: filled glyphs at one weight, drawn in the same chamfered badge (ModeBadge)
         ["silent": "leaf.fill", "performance": "gauge.with.needle.fill", "turbo": "flame.fill", "manual": "dial.low.fill"][rawValue]!
@@ -351,20 +365,20 @@ enum Apply {
         var m = s.mode
         if m == .turbo && !st.ac { m = .performance }               // as Armoury Crate: no Turbo on battery
         if m != .manual {
-            return Asus.set(.profile, m.firmwareProfile) == KERN_SUCCESS ? nil : "could not set the profile"
+            return Asus.set(.profile, m.firmwareProfile) == KERN_SUCCESS ? nil : "无法设置性能模式"
         }
-        guard Asus.set(.profile, Mode.performance.firmwareProfile) == KERN_SUCCESS else { return "could not set the profile" }
+        guard Asus.set(.profile, Mode.performance.firmwareProfile) == KERN_SUCCESS else { return "无法设置性能模式" }
         let base = s.fanBase == .turbo && !st.ac ? Mode.performance : s.fanBase
         for fan in 0..<2 {
-            guard let c = Asus.fanCurve(fan: fan, profile: base.firmwareProfile) else { return "could not read the fan curve" }
-            guard Asus.setFanCurve(fan: fan, c) == KERN_SUCCESS else { return "the fan curve was refused" }
+            guard let c = Asus.fanCurve(fan: fan, profile: base.firmwareProfile) else { return "无法读取风扇曲线" }
+            guard Asus.setFanCurve(fan: fan, c) == KERN_SUCCESS else { return "风扇曲线被拒绝" }
         }
         let r = st.ranges
         let spl = min(max(s.spl, r[0].0), r[0].1)
         let sppt = min(max(max(s.sppt, spl), r[1].0), r[1].1)
         let fppt = min(max(max(s.fppt, sppt), r[2].0), r[2].1)
         for (w, v) in [(Asus.What.spl, spl), (.sppt, sppt), (.fppt, fppt)] where Asus.set(w, v) != KERN_SUCCESS {
-            return "power limit \(v) W was refused"
+            return "功耗上限 \(v) W 被拒绝"
         }
         return nil
     }
@@ -397,7 +411,7 @@ final class RogModel: ObservableObject {
     @Published var history: [Sample] = []
     private var sampleID = 0
     var activeMode: Mode? { st.present ? (st.fanCustom ? .manual : Mode.from(profile: st.profile)) : nil }
-    var modeLabel: String { activeMode?.title ?? "Unavailable" }
+    var modeLabel: String { activeMode?.title ?? "不可用" }
     var currentSlash: Slash { st.slash.map { Slash(packed: $0) } ?? slash }
     var manualDirty: Bool {
         let saved = SourceSettings.load(ac: st.ac)
@@ -437,7 +451,7 @@ final class RogModel: ObservableObject {
         }
         if st.present, d.object(forKey: "charge") == nil, let c = st.charge, (20...100).contains(c) { charge = c; d.set(c, forKey: "charge") }
         settings = SourceSettings.load(ac: st.ac)
-        applyAll(reason: "start")
+        applyAll(reason: "启动")
         applyLighting()
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             // the keyboard comes back from sleep with its own defaults: give it a moment, then send ours again
@@ -505,66 +519,66 @@ final class RogModel: ObservableObject {
         st = now; lastAC = now.ac
         settings = SourceSettings.load(ac: now.ac)
         applyAll(reason: now.ac ? "on AC" : "on battery")
-        autoNote = "Switched to \(settings.mode.title) when the charger was \(now.ac ? "plugged in" : "unplugged")"
+        autoNote = "已切换到 \(settings.mode.title)：\(now.ac ? "已接入电源" : "已拔掉电源")"
         autoNoteAt = Date()
     }
 
     func applyAll(reason: String) {
-        guard st.present else { message = "AsusWmi is not loaded"; return }
+        guard st.present else { message = "AsusWmi 未加载"; return }
         profileError = Apply.mode(settings, state: st) ?? ""
         chargeError = ""
-        if st.charge != charge, Asus.set(.charge, charge) != KERN_SUCCESS { chargeError = "Charge limit was not applied." }
+        if st.charge != charge, Asus.set(.charge, charge) != KERN_SUCCESS { chargeError = "充电上限未生效。" }
         st = Asus.state()
         loadCurve()
         let errs = [profileError, chargeError].filter { !$0.isEmpty }
-        message = errs.isEmpty ? "\(settings.mode.title) applied (\(reason))" : errs.joined(separator: "; ")
+        message = errs.isEmpty ? "已应用 \(settings.mode.title)（\(reason)）" : errs.joined(separator: "; ")
         onChange?()
     }
 
     func choose(_ m: Mode) {
         settings.mode = m
         settings.save(ac: st.ac)
-        applyAll(reason: st.ac ? "AC" : "battery")
+        applyAll(reason: st.ac ? "接电源" : "用电池")
     }
-    func saveManual() { settings.save(ac: st.ac); applyAll(reason: "manual limits") }
+    func saveManual() { settings.save(ac: st.ac); applyAll(reason: "自定义功耗") }
     func setCharge(_ v: Int) {
         charge = v; UserDefaults.standard.set(v, forKey: "charge")
-        chargeError = Asus.set(.charge, v) == KERN_SUCCESS ? "" : "Charge limit was not applied."
-        message = chargeError.isEmpty ? "charge limit \(v) %" : chargeError
+        chargeError = Asus.set(.charge, v) == KERN_SUCCESS ? "" : "充电上限未生效。"
+        message = chargeError.isEmpty ? "充电上限 \(v)%" : chargeError
         st = Asus.state()
     }
     func applyLighting() {
         guard st.lighting else { return }
         var errs: [String] = []
-        if Asus.set(.kbd, kbd) != KERN_SUCCESS { errs.append("keyboard light refused") }
-        if Asus.set(.slash, slash.packed) != KERN_SUCCESS { errs.append("Slash refused") }
+        if Asus.set(.kbd, kbd) != KERN_SUCCESS { errs.append("键盘背光被拒绝") }
+        if Asus.set(.slash, slash.packed) != KERN_SUCCESS { errs.append("Slash 灯效被拒绝") }
         st = Asus.state()
         lightingError = errs.joined(separator: "; ")
         if !errs.isEmpty { message = lightingError }
     }
     func setKbd(_ v: Int) {
         kbd = v; UserDefaults.standard.set(v, forKey: "kbd")
-        lightingError = Asus.set(.kbd, v) == KERN_SUCCESS ? "" : "Keyboard light was not applied. Check the keyboard connection."
-        message = lightingError.isEmpty ? "keyboard light \(v)" : lightingError
+        lightingError = Asus.set(.kbd, v) == KERN_SUCCESS ? "" : "键盘背光未生效，请检查键盘连接。"
+        message = lightingError.isEmpty ? "键盘背光 \(v)" : lightingError
         st = Asus.state()
     }
     func setAura(_ v: Int) {
-        lightingError = Asus.set(.aura, v) == KERN_SUCCESS ? "" : "Aura mode was not applied. Check the keyboard connection."
+        lightingError = Asus.set(.aura, v) == KERN_SUCCESS ? "" : "Aura 灯效未生效，请检查键盘连接。"
         message = lightingError.isEmpty ? "Aura \(LightingTile.auraModes[v])" : lightingError
         st = Asus.state()
     }
     func setSlash(_ s: Slash) {
         slash = s; UserDefaults.standard.set(s.packed, forKey: "slash")
-        lightingError = Asus.set(.slash, s.packed) == KERN_SUCCESS ? "" : "Slash lighting was not applied. Check the keyboard connection."
-        message = lightingError.isEmpty ? (s.bright == 0 ? "Slash off" : "Slash \(Slash.modes[s.mode])") : lightingError
+        lightingError = Asus.set(.slash, s.packed) == KERN_SUCCESS ? "" : "Slash 灯效未生效，请检查键盘连接。"
+        message = lightingError.isEmpty ? (s.bright == 0 ? "Slash 已关闭" : "Slash \(Slash.modes[s.mode])") : lightingError
         st = Asus.state()
     }
     var batteryLine: String {
-        guard st.batDesign > 5 else { return "battery data not available from the firmware" }
+        guard st.batDesign > 5 else { return "固件未提供电池数据" }
         var s = ""
-        if st.batFull > 0 { s += String(format: "health %.0f %% (%d / %d mAh)", 100.0 * Double(st.batFull) / Double(st.batDesign), st.batFull, st.batDesign) }
+        if st.batFull > 0 { s += String(format: "健康度 %.0f %%（%d / %d mAh）", 100.0 * Double(st.batFull) / Double(st.batDesign), st.batFull, st.batDesign) }
         if st.batFull > 0, st.batNow > 0 { s += String(format: " · %.0f %%", 100.0 * Double(st.batNow) / Double(st.batFull)) }
-        if st.batState & 2 != 0 { s += " · charging \(st.batRate) mA" } else if st.batState & 1 != 0 { s += " · \(st.batRate) mA" }
+        if st.batState & 2 != 0 { s += " · 充电中 \(st.batRate) mA" } else if st.batState & 1 != 0 { s += " · \(st.batRate) mA" }
         return s
     }
     func loadCurve() {
@@ -579,24 +593,24 @@ final class RogModel: ObservableObject {
     // ---- sound
     // Built-in chosen by hand means "no profile": rogaudiod would otherwise move the default straight back to ROG Speakers.
     func setOutput(_ d: AudioDevice) {
-        if sound.rog, !Sound.write(["autoDefault": !d.builtin]) { soundError = "RogAudio settings could not be saved."; return }
-        soundError = Sound.setDefault(d.id, input: false) ? "" : "\(d.label) could not be made the output."
+        if sound.rog, !Sound.write(["autoDefault": !d.builtin]) { soundError = "RogAudio 设置保存失败。"; return }
+        soundError = Sound.setDefault(d.id, input: false) ? "" : "无法将 \(d.label) 设为输出设备。"
         sound = Sound.state()
     }
     func setProfile(_ p: String) {
-        soundError = Sound.write(["profile": p]) ? "" : "The sound profile was not saved."
+        soundError = Sound.write(["profile": p]) ? "" : "音效配置保存失败。"
         sound = Sound.state()
     }
     // Clear Mic off: apps that record from ROG Clear Mic would get silence, so the built-in mic becomes the input again
     func setClearMic(_ on: Bool) {
-        guard Sound.write(["micEnabled": on]) else { soundError = "Clear Mic setting was not saved."; return }
+        guard Sound.write(["micEnabled": on]) else { soundError = "Clear Mic 设置保存失败。"; return }
         let target = on ? Sound.byUID(Sound.micUID) : (sound.input?.uid == Sound.micUID ? Sound.builtinInput() : nil)
-        if let t = target, !Sound.setDefault(t, input: true) { soundError = "The input device was not changed." } else { soundError = "" }
+        if let t = target, !Sound.setDefault(t, input: true) { soundError = "输入设备切换失败。" } else { soundError = "" }
         sound = Sound.state()
     }
     // mutes the built-in mic itself, so the direct input and ROG Clear Mic both go silent
     func setMicMute(_ on: Bool) {
-        guard let mic = Sound.builtinInput(), Sound.setMute(mic, on) else { soundError = "The microphone could not be \(on ? "muted" : "unmuted")."; return }
+        guard let mic = Sound.builtinInput(), Sound.setMute(mic, on) else { soundError = "麦克风\(on ? "静音" : "取消静音")失败。"; return }
         soundError = ""
         sound = Sound.state()
     }
@@ -611,7 +625,7 @@ final class RogModel: ObservableObject {
         UserDefaults.standard.set(true, forKey: "custom.saved")
         settings.mode = .manual
         settings.save(ac: st.ac)
-        applyAll(reason: "custom limits")
+        applyAll(reason: "自定义功耗")
     }
     func resetCustom() {
         let saved = SourceSettings.load(ac: st.ac)
@@ -638,18 +652,18 @@ final class RogModel: ObservableObject {
 extension Mode {
     var short: String {
         switch self {
-        case .silent: return "Quiet"
-        case .performance: return "Balanced"
-        case .turbo: return "Max power"
-        case .manual: return "Your limits"
+        case .silent: return "安静"
+        case .performance: return "均衡"
+        case .turbo: return "最大功耗"
+        case .manual: return "你的上限"
         }
     }
     var detail: String {
         switch self {
-        case .silent: return "Quiet fans, cool and long battery"
-        case .performance: return "Balanced for work and play"
-        case .turbo: return "Full power on the charger"
-        case .manual: return "Your own power limits"
+        case .silent: return "风扇安静，温度低，续航长"
+        case .performance: return "工作娱乐兼顾"
+        case .turbo: return "接电时释放全部功耗"
+        case .manual: return "自定义的功耗上限"
         }
     }
     var level: Int { self == .silent ? 1 : self == .performance ? 2 : self == .turbo ? 4 : 3 }   // relative power, 4 segments
@@ -722,7 +736,7 @@ struct PopoverTile: View {
         .accessibilityLabel(mode.title)
         .accessibilityHint(subtitle)
         .accessibilityAddTraits(selected ? .isSelected : [])
-        .help(unavailable ? "Turbo needs the charger" : mode.detail)
+        .help(unavailable ? "增强模式需要接电源" : mode.detail)
     }
 }
 
@@ -734,23 +748,23 @@ struct ContentView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if !m.st.present {
-                Label("AsusWmi is not loaded. Controls are off until the kext loads.", systemImage: "exclamationmark.triangle.fill")
+                Label("AsusWmi 未加载。驱动加载前控件不可用。", systemImage: "exclamationmark.triangle.fill")
                     .font(.system(size: 11)).foregroundStyle(T.amber).fixedSize(horizontal: false, vertical: true)
             }
             header
             modes
             VStack(spacing: 0) {
-                row("Charge limit") {
+                row("充电上限") {
                     let opts = [60, 80, 100]
-                    Pills(items: opts.map { "\($0)%" }, selected: m.st.charge.flatMap { opts.firstIndex(of: $0) }, minWidth: 30, pad: 7, label: "Charge limit") {
+                    Pills(items: opts.map { "\($0)%" }, selected: m.st.charge.flatMap { opts.firstIndex(of: $0) }, minWidth: 30, pad: 7, label: "充电上限") {
                         m.setCharge(opts[$0])
                     }
                     .disabled(m.st.charge == nil)
                 }
                 if m.st.lighting {
                     Rectangle().fill(T.line).frame(height: 1)
-                    row("Keyboard") {
-                        Pills(items: ["Off", "Low", "Med", "High"], selected: m.st.kbd, minWidth: 30, pad: 7, label: "Keyboard") { m.setKbd($0) }
+                    row("键盘背光") {
+                        Pills(items: ["关", "低", "中", "高"], selected: m.st.kbd, minWidth: 30, pad: 7, label: "键盘背光") { m.setKbd($0) }
                             .disabled(m.st.kbd == nil)
                     }
                 }
@@ -762,12 +776,12 @@ struct ContentView: View {
             ErrorLine(text: m.chargeError)
             ErrorLine(text: m.lightingError)
             VStack(spacing: 0) {                        // sound works without AsusWmi
-                row("Output") {
+                row("输出设备") {
                     RogMenu(title: m.sound.output?.label ?? "–", items: m.sound.outputs.map(\.label)) { m.setOutput(m.sound.outputs[$0]) }
                 }
                 Rectangle().fill(T.line).frame(height: 1)
-                row(m.sound.micInUse && m.sound.micMuted != true ? "Microphone · in use" : "Microphone") {
-                    Pills(items: ["On", "Muted"], selected: m.sound.micMuted.map { $0 ? 1 : 0 }, minWidth: 30, pad: 7, label: "Microphone") {
+                row(m.sound.micInUse && m.sound.micMuted != true ? "麦克风 · 使用中" : "麦克风") {
+                    Pills(items: ["开", "静音"], selected: m.sound.micMuted.map { $0 ? 1 : 0 }, minWidth: 30, pad: 7, label: "Microphone") {
                         m.setMicMute($0 == 1)
                     }
                     .disabled(m.sound.micMuted == nil)
@@ -793,17 +807,17 @@ struct ContentView: View {
                         .foregroundStyle((m.tctl ?? 0) >= 90 ? T.red : T.text)
                     Text("°C").font(T.num(14, .medium)).foregroundStyle(T.dim)
                 }
-                Caps((m.tctl ?? 0) >= 90 ? "CPU · hot" : "CPU")
+                Caps((m.tctl ?? 0) >= 90 ? "CPU · 高温" : "CPU")
             }
             Spacer(minLength: 0)
             VStack(alignment: .leading, spacing: 7) {
                 HStack(alignment: .firstTextBaseline, spacing: 3) {
-                    Caps("Power"); Spacer()
+                    Caps("功耗"); Spacer()
                     Text(m.watts.map { String(format: "%.0f", $0) } ?? "–").font(T.num(12)).monospacedDigit().foregroundStyle(T.text)
                     Text("W").font(.system(size: 9.5)).foregroundStyle(T.dim)
                 }
-                fan("CPU fan", m.st.cpuFan)
-                fan("GPU fan", m.st.gpuFan)
+                fan("CPU 风扇", m.st.cpuFan)
+                fan("GPU 风扇", m.st.gpuFan)
             }
             .frame(width: 136)
         }
@@ -817,7 +831,7 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(alignment: .firstTextBaseline) {
                 Caps(name); Spacer()
-                Text(verbatim: !m.st.present ? "–" : rpm == 0 ? "Off" : String(rpm)).font(T.num(10.5, .medium)).monospacedDigit().foregroundStyle(T.text)
+                Text(verbatim: !m.st.present ? "–" : rpm == 0 ? "关" : String(rpm)).font(T.num(10.5, .medium)).monospacedDigit().foregroundStyle(T.text)
             }
             Segments(lit: m.st.present ? min(12, rpm * 12 / 6500) : 0, total: 12, height: 4)
         }
@@ -826,16 +840,16 @@ struct ContentView: View {
     var modes: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 5) {
-                Caps("Mode"); Spacer()
+                Caps("模式"); Spacer()
                 if m.st.present {   // the power source comes from AsusWmi: without it, say nothing
                     Image(systemName: m.st.ac ? "powerplug.fill" : "battery.75percent").font(.system(size: 9.5)).foregroundStyle(T.dim)
-                    Text(m.st.ac ? "On charger" : "On battery").font(.system(size: 10.5)).foregroundStyle(T.dim)
+                    Text(m.st.ac ? "接电源" : "用电池").font(.system(size: 10.5)).foregroundStyle(T.dim)
                 }
             }
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)], spacing: 6) {
                 ForEach(Mode.allCases) { mode in
                     let unavailable = mode == .turbo && !m.st.ac
-                    let sub = unavailable ? "Needs charger" : (mode == .manual && !m.customReady) ? "Set up…" : mode.short
+                    let sub = unavailable ? "需要接电源" : (mode == .manual && !m.customReady) ? "去设置…" : mode.short
                     PopoverTile(mode: mode, selected: m.activeMode == mode, unavailable: unavailable, subtitle: sub) {
                         if mode == .manual && !m.customReady { openWindow(.limits) } else { m.choose(mode) }
                     }
@@ -857,7 +871,7 @@ struct ContentView: View {
         HStack {
             Button { openWindow(nil) } label: {
                 HStack(spacing: 6) {
-                    Text("Open ROG Control").font(.system(size: 11.5, weight: .medium))
+                    Text("打开 ROG 控制中心").font(.system(size: 11.5, weight: .medium))
                     Image(systemName: "arrow.up.right").font(.system(size: 9, weight: .bold)).foregroundStyle(T.dim)
                 }
                 .padding(.horizontal, 10).frame(height: 26)
@@ -865,16 +879,16 @@ struct ContentView: View {
             .buttonStyle(RogButtonStyle(cut: 6))
             Spacer()
             Menu {
-                Toggle("Open at Login", isOn: Binding(get: { m.loginEnabled }, set: { m.setLogin($0) }))
+                Toggle("登录时启动", isOn: Binding(get: { m.loginEnabled }, set: { m.setLogin($0) }))
                 Divider()
-                Button("Created by thanhnndev (GitHub)") { NSWorkspace.shared.open(URL(string: "https://github.com/thanhnndev")!) }
-                Button("Quit ROG Control") { NSApp.terminate(nil) }
+                Button("作者：thanhnndev（GitHub）") { NSWorkspace.shared.open(URL(string: "https://github.com/thanhnndev")!) }
+                Button("退出 ROG 控制中心") { NSApp.terminate(nil) }
             } label: {
                 Image(systemName: "ellipsis").font(.system(size: 12, weight: .bold)).foregroundStyle(T.dim)
                     .frame(width: 26, height: 26).background(T.raised, in: Chamfer(cut: 6))
             }
             .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
-            .accessibilityLabel("More")
+            .accessibilityLabel("更多")
         }
     }
 
@@ -1104,7 +1118,7 @@ struct CurveChart: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if data.points.isEmpty {
-                Text("The firmware did not return a usable fan curve.").font(.system(size: 12)).foregroundStyle(T.dim).frame(height: 120)
+                Text("固件未返回可用的风扇曲线。").font(.system(size: 12)).foregroundStyle(T.dim).frame(height: 120)
             } else {
                 Chart(data.points) { p in
                     AreaMark(x: .value("Temperature", p.temperature), y: .value("Fan duty", p.duty), series: .value("Segment", p.segment))
@@ -1140,7 +1154,7 @@ struct CurveChart: View {
             }
             HStack {
                 if data.omitted > 0 {
-                    Text("\(data.omitted) firmware point(s) outside the valid range are not drawn.").font(.system(size: 11)).foregroundStyle(T.dim)
+                    Text("\(data.omitted) 个固件数据点超出有效范围，未绘制。").font(.system(size: 11)).foregroundStyle(T.dim)
                 }
                 Spacer()
                 if let p = data.points.first(where: { $0.id == hovered }) {
@@ -1149,8 +1163,8 @@ struct CurveChart: View {
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Fan duty by temperature")
-        .accessibilityValue(data.points.map { "\($0.temperature) degrees, \($0.duty) percent" }.joined(separator: "; "))
+        .accessibilityLabel("风扇转速随温度变化")
+        .accessibilityValue(data.points.map { "\($0.temperature) 度，\($0.duty) 百分比" }.joined(separator: "; "))
     }
     private func distance(_ p: FanCurvePoint, _ pos: CGPoint, _ proxy: ChartProxy) -> CGFloat {
         guard let x = proxy.position(forX: p.temperature), let y = proxy.position(forY: p.duty) else { return .infinity }
@@ -1163,7 +1177,7 @@ struct LiveChart: View {
     var height: CGFloat = 96
     var body: some View {
         if samples.count < 2 {
-            Text("Collecting readings…").font(.system(size: 11)).foregroundStyle(T.dim).frame(maxWidth: .infinity, minHeight: height)
+            Text("正在采集数据…").font(.system(size: 11)).foregroundStyle(T.dim).frame(maxWidth: .infinity, minHeight: height)
         } else {
             Chart {
                 ForEach(samples) { s in
@@ -1184,7 +1198,7 @@ struct LiveChart: View {
                 AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5)).foregroundStyle(Color.white.opacity(0.06))
                 AxisValueLabel { if let n = v.as(Int.self) { Text("\(n)°").font(.system(size: 10)).foregroundStyle(T.faint) } } } }
             .frame(height: height)
-            .accessibilityLabel("CPU temperature and package power, last minutes")
+            .accessibilityLabel("最近几分钟的 CPU 温度与封装功耗")
         }
     }
 }
@@ -1197,12 +1211,12 @@ enum RogDialog: String, Identifiable {
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .limits: return "Custom limits"
-        case .fans: return "Fan curves"
-        case .slash: return "Slash animations"
-        case .battery: return "Battery"
-        case .settings: return "Settings"
-        case .doctor: return "Doctor"
+        case .limits: return "自定义功耗"
+        case .fans: return "风扇曲线"
+        case .slash: return "Slash 灯效"
+        case .battery: return "电池"
+        case .settings: return "设置"
+        case .doctor: return "体检"
         }
     }
     var width: CGFloat { self == .limits ? 820 : self == .slash ? 900 : self == .settings ? 560 : self == .doctor ? 760 : 680 }
@@ -1277,17 +1291,17 @@ struct RogWindowView: View {
         HStack(alignment: .center, spacing: 10) {     // sits in the title bar, centred on the traffic lights
             HStack(alignment: .lastTextBaseline, spacing: 10) {
                 Text("ROG CONTROL").font(T.num(16, .bold)).foregroundStyle(T.text)
-                Caps("Zephyrus G14 · GA403WM")
+                Caps(Machine.line)
             }
             .padding(.leading, 68)        // clear the traffic lights
             Spacer()
-            chip(dot: m.st.present ? .green : T.amber, m.st.present ? "AsusWmi connected" : "AsusWmi not loaded, controls are off until it loads through OpenCore")
-            if m.st.present { chip(icon: m.st.ac ? "powerplug.fill" : "battery.75percent", m.st.ac ? "On charger" : "On battery") }
+            chip(dot: m.st.present ? .green : T.amber, m.st.present ? "AsusWmi 已连接" : "AsusWmi 未加载，需经 OpenCore 加载后才可控")
+            if m.st.present { chip(icon: m.st.ac ? "powerplug.fill" : "battery.75percent", m.st.ac ? "接电源" : "用电池") }
             doctorButton
             Button { m.dialog = .settings } label: {
                 Image(systemName: "gearshape.fill").font(.system(size: 12)).foregroundStyle(T.dim).frame(width: 28, height: 26)
             }
-            .buttonStyle(RogButtonStyle(cut: 6)).help("Settings").accessibilityLabel("Settings")
+            .buttonStyle(RogButtonStyle(cut: 6)).help("设置").accessibilityLabel("设置")
         }
         .frame(height: 28)
     }
@@ -1298,13 +1312,13 @@ struct RogWindowView: View {
         return Button { m.runDoctor(); m.dialog = .doctor } label: {
             HStack(spacing: 6) {
                 Image(systemName: "stethoscope").font(.system(size: 11, weight: .semibold)).foregroundStyle(worst.color)
-                Text(m.doctor.isEmpty ? "Doctor" : issues.isEmpty ? "All good" : "\(issues.count) to fix").font(.system(size: 11))
+                Text(m.doctor.isEmpty ? "体检" : issues.isEmpty ? "一切正常" : "\(issues.count) 项待修").font(.system(size: 11))
                     .foregroundStyle(issues.isEmpty ? T.dim : T.text)
             }
             .padding(.horizontal, 10).frame(height: 26)
         }
-        .buttonStyle(RogButtonStyle(cut: 6)).help("Doctor: checks the drivers, Fn keys, audio and permissions")
-        .accessibilityLabel("Doctor").accessibilityValue(issues.isEmpty ? "No problems" : "\(issues.count) problems")
+        .buttonStyle(RogButtonStyle(cut: 6)).help("体检：检查驱动、Fn 键、音频与权限")
+        .accessibilityLabel("体检").accessibilityValue(issues.isEmpty ? "无问题" : "\(issues.count) 个问题")
     }
     func chip(dot: Color? = nil, icon: String? = nil, _ text: String) -> some View {
         HStack(spacing: 6) {
@@ -1326,12 +1340,12 @@ struct LiveCard: View {
             HStack(alignment: .center, spacing: 20) {
                 Gauge(value: m.tctl ?? 0, maximum: 100, text: m.tctl.map { String(format: "%.0f", $0) } ?? "–", unit: "°C", caption: "CPU", size: 150)
                 Gauge(value: m.watts ?? 0, maximum: Double(limitNow > 0 ? limitNow : 80),
-                      text: m.watts.map { String(format: "%.0f", $0) } ?? "–", unit: "W", caption: "Package", size: 108)
+                      text: m.watts.map { String(format: "%.0f", $0) } ?? "–", unit: "W", caption: "封装", size: 108)
                 VStack(alignment: .leading, spacing: 13) {
-                    fan("CPU fan", m.st.cpuFan)
-                    fan("GPU fan", m.st.gpuFan)
+                    fan("CPU 风扇", m.st.cpuFan)
+                    fan("GPU 风扇", m.st.gpuFan)
                     HStack(spacing: 18) {
-                        stat("Power limit", limitNow > 0 ? "\(limitNow) W" : "Profile")
+                        stat("功耗上限", limitNow > 0 ? "\(limitNow) W" : "随模式")
                         stat("GPU", gpuMode)
                         stat("TGP", m.st.baseTgp > 0 ? "\(m.st.baseTgp) W" : "–")
                     }
@@ -1339,14 +1353,14 @@ struct LiveCard: View {
                 .frame(maxWidth: .infinity)
             }
             if (m.tctl ?? 0) >= 90 {
-                Label("Running hot. Silent lowers power and heat.", systemImage: "thermometer.high").font(.system(size: 11)).foregroundStyle(T.amber)
+                Label("温度偏高。静音模式可降低功耗与发热。", systemImage: "thermometer.high").font(.system(size: 11)).foregroundStyle(T.amber)
                     .padding(.top, 6)
             }
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 14) {
                     Caps(historyCaption); Spacer()
-                    legend(T.red, "Temperature", dashed: false)
-                    legend(Color.white.opacity(0.55), "Power", dashed: true)
+                    legend(T.red, "温度", dashed: false)
+                    legend(Color.white.opacity(0.55), "功耗", dashed: true)
                 }
                 LiveChart(samples: m.history, height: 150)
             }
@@ -1354,15 +1368,15 @@ struct LiveCard: View {
         }
     }
     var historyCaption: String {
-        guard let first = m.history.first?.date else { return "Live" }
+        guard let first = m.history.first?.date else { return "实时" }
         let minutes = max(1, Int(Date().timeIntervalSince(first) / 60))
-        return "Last \(minutes) minute\(minutes == 1 ? "" : "s")"
+        return "最近 \(minutes) 分钟"
     }
     var gpuMode: String {
         let mux = m.st.gpuMux
         if mux == ~0 { return "–" }
-        var s = mux & 1 == 0 ? "dGPU only" : "Hybrid"
-        if m.st.dgpu != ~0 && m.st.dgpu & 1 != 0 { s += ", off" }
+        var s = mux & 1 == 0 ? "独显直连" : "混合输出"
+        if m.st.dgpu != ~0 && m.st.dgpu & 1 != 0 { s += "，已关闭" }
         return s
     }
     func fan(_ name: String, _ rpm: Int) -> some View {
@@ -1389,7 +1403,7 @@ struct ModeCard: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         Card(pad: 14, stretch: true) {
-            TileHead(title: "Mode")
+            TileHead(title: "模式")
             VStack(spacing: 6) {
                 ForEach(Mode.allCases) { mode in row(mode) }
             }
@@ -1397,15 +1411,15 @@ struct ModeCard: View {
             .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: m.activeMode)
             ErrorLine(text: m.profileError).padding(.top, 6)
             Rectangle().fill(T.line).frame(height: 1).padding(.vertical, 12)
-            Caps("Switch automatically")
+            Caps("自动切换")
             VStack(spacing: 8) { sourceRow(ac: true); sourceRow(ac: false) }.padding(.top, 8)
         }
     }
     func row(_ mode: Mode) -> some View {
         let on = m.activeMode == mode
         let unavailable = mode == .turbo && !m.st.ac
-        let desc = unavailable ? "Needs the charger" :
-            mode == .manual ? (m.customReady ? "\(m.settings.spl) / \(m.settings.sppt) / \(m.settings.fppt) W, your limits" : "Set up your own limits")
+        let desc = unavailable ? "需要接电源" :
+            mode == .manual ? (m.customReady ? "\(m.settings.spl) / \(m.settings.sppt) / \(m.settings.fppt) W，你的上限" : "设置你自己的上限")
             : mode.detail
         return Button {
             if mode == .manual && !m.customReady { m.dialog = .limits } else { m.choose(mode) }
@@ -1434,8 +1448,8 @@ struct ModeCard: View {
         let choices: [Mode] = ac ? Mode.allCases : [.silent, .performance, .manual]
         return HStack(spacing: 8) {
             Image(systemName: ac ? "powerplug.fill" : "battery.75percent").font(.system(size: 11)).foregroundStyle(current ? T.text : T.dim).frame(width: 16)
-            Text(ac ? "On charger" : "On battery").font(.system(size: 12)).foregroundStyle(current ? T.text : T.dim)
-            if current { Text("NOW").font(.system(size: 9, weight: .bold)).tracking(1.2).foregroundStyle(T.red) }
+            Text(ac ? "接电源" : "用电池").font(.system(size: 12)).foregroundStyle(current ? T.text : T.dim)
+            if current { Text("当前").font(.system(size: 9, weight: .bold)).tracking(1.2).foregroundStyle(T.red) }
             Spacer()
             RogMenu(title: m.mode(forAC: ac).title, items: choices.map(\.title)) { m.setMode(choices[$0], forAC: ac) }
         }
@@ -1447,10 +1461,10 @@ extension RogModel {
     var batteryLevel: Int? { st.batFull > 0 ? min(100, max(0, st.batNow * 100 / st.batFull)) : nil }
     var batteryState: String {
         guard st.present else { return "" }
-        let limit = st.charge.map { " at \($0)%" } ?? ""
-        if st.batState & 2 != 0 { return "Charging" + (st.batRate > 0 ? ", \(st.batRate) mA" : "") }
-        if st.batState & 1 != 0 { return "On battery" + (st.batRate > 0 ? ", \(st.batRate) mA" : "") }
-        return st.ac ? "Holding\(limit)" : "On battery"
+        let limit = st.charge.map { "，上限 \($0)%" } ?? ""
+        if st.batState & 2 != 0 { return "充电中" + (st.batRate > 0 ? ", \(st.batRate) mA" : "") }
+        if st.batState & 1 != 0 { return "用电池" + (st.batRate > 0 ? ", \(st.batRate) mA" : "") }
+        return st.ac ? "保持\(limit)" : "用电池"
     }
 }
 
@@ -1459,7 +1473,7 @@ struct BatteryTile: View {
     let presets = [60, 80, 100]
     var body: some View {
         Card(pad: 14, stretch: true) {
-            TileHead(title: "Battery", action: "Details") { m.dialog = .battery }
+            TileHead(title: "电池", action: "详情") { m.dialog = .battery }
             HStack(alignment: .firstTextBaseline, spacing: 2) {
                 Text(verbatim: m.batteryLevel.map(String.init) ?? "–").font(T.num(34)).monospacedDigit().foregroundStyle(T.text)
                 Text("%").font(T.num(14, .medium)).foregroundStyle(T.dim)
@@ -1470,9 +1484,9 @@ struct BatteryTile: View {
             Segments(lit: (m.batteryLevel ?? 0) * 20 / 100, total: 20, height: 10).padding(.top, 4)
             Spacer(minLength: 14)
             HStack {
-                Text("Charge limit").font(.system(size: 12)).foregroundStyle(T.text); Spacer()
+                Text("充电上限").font(.system(size: 12)).foregroundStyle(T.text); Spacer()
                 Pills(items: presets.map { "\($0)%" }, selected: m.st.charge.flatMap { presets.firstIndex(of: $0) }, minWidth: 30, pad: 7,
-                      label: "Charge limit") { m.setCharge(presets[$0]) }
+                      label: "充电上限") { m.setCharge(presets[$0]) }
                     .disabled(m.st.charge == nil)
             }
             ErrorLine(text: m.chargeError).padding(.top, 6)
@@ -1484,27 +1498,27 @@ struct LimitsTile: View {
     @ObservedObject var m: RogModel
     var body: some View {
         Card(pad: 14, stretch: true) {
-            TileHead(title: "Custom limits", action: "Edit") { m.dialog = .limits }
+            TileHead(title: "自定义功耗", action: "编辑") { m.dialog = .limits }
             let top = Double(max(m.settings.fppt, m.settings.sppt, m.settings.spl, 1))
             HStack(alignment: .bottom, spacing: 8) {
-                bar("Burst", m.settings.fppt, top, 0.95)
-                bar("Boost", m.settings.sppt, top, 0.65)
-                bar("Sustained", m.settings.spl, top, 0.40)
+                bar("瞬时", m.settings.fppt, top, 0.95)
+                bar("短时", m.settings.sppt, top, 0.65)
+                bar("持续", m.settings.spl, top, 0.40)
             }
             .frame(height: 64).padding(.top, 8)
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Custom limits: burst \(m.settings.fppt), short boost \(m.settings.sppt), sustained \(m.settings.spl) watts")
+            .accessibilityLabel("自定义功耗：瞬时 \(m.settings.fppt) W，短时增强 \(m.settings.sppt) W，持续 \(m.settings.spl) W")
             Spacer(minLength: 12)
             HStack {
-                Text("Fans follow").font(.system(size: 12)).foregroundStyle(T.text); Spacer()
+                Text("风扇曲线跟随").font(.system(size: 12)).foregroundStyle(T.text); Spacer()
                 Button { m.dialog = .fans } label: {
                     HStack(spacing: 5) {
-                        Text("\(m.settings.fanBase.title) curve").font(.system(size: 11.5, weight: .medium))
+                        Text("\(m.settings.fanBase.title)曲线").font(.system(size: 11.5, weight: .medium))
                         Image(systemName: "chart.xyaxis.line").font(.system(size: 10))
                     }
                     .padding(.horizontal, 9).frame(height: 26)
                 }
-                .buttonStyle(RogButtonStyle(cut: 6)).help("Show the fan curves")
+                .buttonStyle(RogButtonStyle(cut: 6)).help("查看风扇曲线")
             }
         }
     }
@@ -1519,20 +1533,20 @@ struct LimitsTile: View {
 }
 
 struct LightingTile: View {
-    static let auraModes = ["Static", "Breathe", "Strobe"]       // the single-color keyboard's modes (AsusWmi kAuraModes)
+    static let auraModes = ["静态", "呼吸", "频闪"]       // the single-color keyboard's modes (AsusWmi kAuraModes)
     @ObservedObject var m: RogModel
     var slash: Slash { m.currentSlash }
     var body: some View {
         Card(pad: 14, stretch: true) {
             if !m.st.lighting {
-                TileHead(title: "Lighting")
-                Text("Lighting needs AsusWmi ABI 3 and the N-KEY keyboard.").font(.system(size: 11)).foregroundStyle(T.dim).padding(.top, 10)
+                TileHead(title: "灯效")
+                Text("灯效需要 AsusWmi ABI 3 与 N-KEY 键盘。").font(.system(size: 11)).foregroundStyle(T.dim).padding(.top, 10)
             } else {
-                TileHead(title: "Lighting", action: "Animations") { m.dialog = .slash }
+                TileHead(title: "灯效", action: "动画") { m.dialog = .slash }
                 HStack(spacing: 10) {
                     VStack(alignment: .leading, spacing: 2) {
                         Caps("Slash")
-                        Text(slash.bright > 0 ? Slash.modes[min(slash.mode, Slash.modes.count - 1)] : "Off").font(T.num(18)).foregroundStyle(T.text)
+                        Text(slash.bright > 0 ? Slash.modes[min(slash.mode, Slash.modes.count - 1)] : "关").font(T.num(18)).foregroundStyle(T.text)
                     }
                     Spacer()
                     Toggle("Slash", isOn: slashOn(m)).toggleStyle(.switch).labelsHidden().tint(T.red)
@@ -1540,24 +1554,24 @@ struct LightingTile: View {
                 .padding(.top, 8)
                 Spacer(minLength: 10)
                 HStack {
-                    Text("Brightness").font(.system(size: 12)).foregroundStyle(T.text); Spacer()
-                    Pills(items: ["Low", "Med", "High"], selected: max(1, slash.bright) - 1, minWidth: 30, pad: 7, label: "Slash brightness") {
+                    Text("亮度").font(.system(size: 12)).foregroundStyle(T.text); Spacer()
+                    Pills(items: ["低", "中", "高"], selected: max(1, slash.bright) - 1, minWidth: 30, pad: 7, label: "Slash 亮度") {
                         var s = slash; s.bright = $0 + 1; m.setSlash(s)
                     }
                     .disabled(slash.bright == 0).opacity(slash.bright == 0 ? 0.5 : 1)
                 }
                 HStack {
-                    Text("Keyboard").font(.system(size: 12)).foregroundStyle(T.text); Spacer()
-                    Pills(items: ["Off", "Low", "Med", "High"], selected: m.st.kbd, minWidth: 28, pad: 6, label: "Keyboard") { m.setKbd($0) }
+                    Text("键盘背光").font(.system(size: 12)).foregroundStyle(T.text); Spacer()
+                    Pills(items: ["关", "低", "中", "高"], selected: m.st.kbd, minWidth: 28, pad: 6, label: "键盘背光") { m.setKbd($0) }
                         .disabled(m.st.kbd == nil)
-                        .help("Fn+F2 and Fn+F3 change it too")
+                        .help("Fn+F2、Fn+F3 也可调节")
                 }
                 .padding(.top, 8)
                 HStack {
                     Text("Aura").font(.system(size: 12)).foregroundStyle(T.text); Spacer()
-                    Pills(items: Self.auraModes, selected: m.st.aura, minWidth: 28, pad: 6, label: "Aura mode") { m.setAura($0) }
+                    Pills(items: Self.auraModes, selected: m.st.aura, minWidth: 28, pad: 6, label: "Aura 模式") { m.setAura($0) }
                         .disabled(!m.st.hasAura)
-                        .help(m.st.hasAura ? "Fn+F4 steps through them too" : "Needs AsusWmi 0.2.2 (ABI 5): restart after installing it")
+                        .help(m.st.hasAura ? "Fn+F4 也可切换" : "需要 AsusWmi 0.2.2（ABI 5）：安装后请重启")
                 }
                 .padding(.top, 8)
                 ErrorLine(text: m.lightingError).padding(.top, 6)
@@ -1580,10 +1594,10 @@ struct LightingTile: View {
 // ---- sound, mic and camera row ---------------------------------------------------------------------------------------------------
 extension SoundState {
     var outputLine: String {
-        guard let o = output else { return "No output device" }
-        if o.isRogSpeakers { return !daemon ? "rogaudiod stopped, no sound" : chain ? "Sound profile on" : "Starting the profile" }
-        if o.builtin { return rog ? "Playing, no profile" : "RogAudio not installed" }
-        return "Playing, no profile"
+        guard let o = output else { return "无输出设备" }
+        if o.isRogSpeakers { return !daemon ? "rogaudiod 已停止，没有声音" : chain ? "音效已启用" : "正在启动音效" }
+        if o.builtin { return rog ? "正在播放（无音效）" : "未安装 RogAudio" }
+        return "正在播放（无音效）"
     }
     var outputWarn: Bool { output?.isRogSpeakers == true && !daemon }
 }
@@ -1591,8 +1605,8 @@ extension SoundState {
 struct SoundTile: View {
     @ObservedObject var m: RogModel
     var s: SoundState { m.sound }
-    static let profiles: [(name: String, icon: String)] = [("Off", "circle.slash"), ("Balanced", "slider.horizontal.3"),
-                                                          ("Movie", "film"), ("Music", "music.note"), ("Voice", "person.wave.2")]
+    static let profiles: [(name: String, icon: String)] = [("关", "circle.slash"), ("均衡", "slider.horizontal.3"),
+                                                          ("电影", "film"), ("音乐", "music.note"), ("人声", "person.wave.2")]
     // ROG Speakers and Built-in always get a card; one more card for the active (or first) other device, the rest go in a menu
     var cards: [AudioDevice] {
         let rank: (AudioDevice) -> Int = { $0.isRogSpeakers ? 0 : $0.builtin ? 1 : 2 }
@@ -1605,21 +1619,21 @@ struct SoundTile: View {
     var more: [AudioDevice] { s.outputs.filter { d in !cards.contains { $0.id == d.id } } }
     var body: some View {
         Card(pad: 14, stretch: true) {
-            TileHead(title: "Sound output")
+            TileHead(title: "声音输出")
             HStack(spacing: 8) {
                 ForEach(cards) { d in OutputCard(d: d, on: d.id == s.output?.id, s: s) { m.setOutput(d) } }
                 if !more.isEmpty {
-                    RogMenu(title: "More", items: more.map(\.label)) { m.setOutput(more[$0]) }
-                        .help("Other output devices")
+                    RogMenu(title: "更多", items: more.map(\.label)) { m.setOutput(more[$0]) }
+                        .help("其它输出设备")
                 }
             }
             .padding(.top, 10)
-            if s.outputs.isEmpty { Text("No output device").font(.system(size: 11)).foregroundStyle(T.dim).padding(.top, 10) }
+            if s.outputs.isEmpty { Text("无输出设备").font(.system(size: 11)).foregroundStyle(T.dim).padding(.top, 10) }
             Spacer(minLength: 14)
             HStack {
-                Caps("Sound profile"); Spacer()
+                Caps("音效配置"); Spacer()
                 if s.output?.isRogSpeakers != true && s.rog {
-                    Text("Applies to ROG Speakers").font(.system(size: 10.5)).foregroundStyle(T.faint)
+                    Text("仅对 ROG 扬声器生效").font(.system(size: 10.5)).foregroundStyle(T.faint)
                 }
             }
             HStack(spacing: 6) {
@@ -1633,7 +1647,7 @@ struct SoundTile: View {
                         .frame(maxWidth: .infinity).frame(height: 32)
                     }
                     .buttonStyle(RogButtonStyle(selected: on, cut: 6))
-                    .accessibilityLabel("Sound profile \(p.name)").accessibilityAddTraits(on ? .isSelected : [])
+                    .accessibilityLabel("音效 \(p.name)").accessibilityAddTraits(on ? .isSelected : [])
                 }
             }
             .padding(.top, 8)
@@ -1650,10 +1664,10 @@ struct OutputCard: View {
     let pick: () -> Void
     @State private var hover = false
     var icon: String { d.isRogSpeakers ? "hifispeaker.2.fill" : d.builtin ? "laptopcomputer" : "speaker.wave.2.fill" }
-    var name: String { d.isRogSpeakers ? "ROG Speakers" : d.builtin ? "Built-in" : d.name }
+    var name: String { d.isRogSpeakers ? "ROG Speakers" : d.builtin ? "内置" : d.name }
     var note: String {
         if on { return s.outputLine }
-        return d.isRogSpeakers ? "With sound profile" : d.builtin ? "Direct, no profile" : "External"
+        return d.isRogSpeakers ? "带音效配置" : d.builtin ? "直通，无音效" : "外接"
     }
     var body: some View {
         Button(action: pick) {
@@ -1672,8 +1686,8 @@ struct OutputCard: View {
         }
         .buttonStyle(.plain)
         .onHover { hover = $0 }
-        .help(d.isRogSpeakers ? "ROG Speakers runs the sound profile" : d.builtin ? "Built-in plays without the profile" : d.name)
-        .accessibilityLabel("Output \(name)").accessibilityValue(note).accessibilityAddTraits(on ? .isSelected : [])
+        .help(d.isRogSpeakers ? "ROG 扬声器会启用音效配置" : d.builtin ? "内置扬声器直通，不经音效" : d.name)
+        .accessibilityLabel("输出 \(name)").accessibilityValue(note).accessibilityAddTraits(on ? .isSelected : [])
     }
 }
 
@@ -1683,31 +1697,31 @@ struct MicCameraTile: View {
     var body: some View {
         Card(pad: 14, stretch: true) {
             HStack(spacing: 10) {                     // each half carries its own label, so the tile has no title
-                state("Microphone", s.micMuted == nil ? "Not found" : s.micMuted == true ? "Muted" : s.micInUse ? "In use" : "Ready",
+                state("麦克风", s.micMuted == nil ? "未找到" : s.micMuted == true ? "已静音" : s.micInUse ? "使用中" : "就绪",
                       live: s.micInUse && s.micMuted != true)
                 Spacer()
-                Pills(items: ["On", "Muted"], selected: s.micMuted.map { $0 ? 1 : 0 }, minWidth: 34, pad: 7, label: "Microphone") {
+                Pills(items: ["开", "静音"], selected: s.micMuted.map { $0 ? 1 : 0 }, minWidth: 34, pad: 7, label: "Microphone") {
                     m.setMicMute($0 == 1)
                 }
                 .disabled(s.micMuted == nil)
             }
             HStack {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("Clear Mic").font(.system(size: 12)).foregroundStyle(T.text)
-                    Text(s.rog ? "Noise reduction, apps record from ROG Clear Mic" : "Needs RogAudio").font(.system(size: 10.5)).foregroundStyle(T.dim)
+                    Text("Clear Mic 降噪").font(.system(size: 12)).foregroundStyle(T.text)
+                    Text(s.rog ? "降噪开启，应用从 ROG Clear Mic 录音" : "需要 RogAudio").font(.system(size: 10.5)).foregroundStyle(T.dim)
                 }
                 Spacer()
-                Toggle("Clear Mic", isOn: Binding(get: { s.clearMic }, set: { m.setClearMic($0) })).toggleStyle(.switch).labelsHidden().tint(T.red)
+                Toggle("Clear Mic 降噪", isOn: Binding(get: { s.clearMic }, set: { m.setClearMic($0) })).toggleStyle(.switch).labelsHidden().tint(T.red)
                     .disabled(!s.rog)
             }
             .padding(.top, 8)
             Rectangle().fill(T.line).frame(height: 1).padding(.vertical, 10)
             HStack {
-                state("Camera", s.camera == nil ? "Not found" : s.cameraInUse ? "In use" : "Off", live: s.cameraInUse)
+                state("摄像头", s.camera == nil ? "未找到" : s.cameraInUse ? "使用中" : "关", live: s.cameraInUse)
                 Spacer()
                 Text(s.camera ?? "").font(.system(size: 11)).foregroundStyle(T.dim).lineLimit(1)
             }
-            .help("The firmware has no camera switch; macOS shows which app uses it in Control Center")
+            .help("固件没有摄像头开关；macOS 会在控制中心显示占用它的应用")
         }
     }
     // a red dot marks live capture; the word says it too, so the colour never carries it alone
@@ -1741,7 +1755,7 @@ struct DialogShell: View {
                     }
                     .buttonStyle(RogButtonStyle(cut: 6))
                     .keyboardShortcut(.cancelAction)
-                    .accessibilityLabel("Close")
+                    .accessibilityLabel("关闭")
                 }
                 .padding(.bottom, 16)
                 Group {
@@ -1771,40 +1785,40 @@ struct LimitsEditor: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top, spacing: 28) {
                 VStack(alignment: .leading, spacing: 18) {
-                    Caps("Custom mode, \(m.st.ac ? "on charger" : "on battery")")
-                    limit("Burst", "A few seconds when a load starts", "FPPT", $m.settings.fppt, m.st.ranges[2])
-                    limit("Short boost", "The first few minutes", "SPPT", $m.settings.sppt, m.st.ranges[1])
-                    limit("Sustained", "As long as the load lasts", "SPL", $m.settings.spl, m.st.ranges[0])
+                    Caps("自定义模式，\(m.st.ac ? "接电源" : "用电池")")
+                    limit("瞬时", "负载开始后的几秒", "FPPT", $m.settings.fppt, m.st.ranges[2])
+                    limit("短时增强", "最初的几分钟", "SPPT", $m.settings.sppt, m.st.ranges[1])
+                    limit("持续", "负载持续期间", "SPL", $m.settings.spl, m.st.ranges[0])
                     HStack(spacing: 10) {
-                        Caps("Fans follow")
+                        Caps("风扇曲线跟随")
                         Spacer()
                         let bases: [Mode] = [.silent, .performance, .turbo]
-                        RogMenu(title: m.settings.fanBase.title + " curve", items: bases.map { $0.title + " curve" }) {
+                        RogMenu(title: m.settings.fanBase.title + "曲线", items: bases.map { $0.title + "曲线" }) {
                             m.settings.fanBase = bases[$0]; m.loadCurve()
                         }
                     }
                 }
                 .frame(width: 380)
                 VStack(alignment: .leading, spacing: 10) {
-                    Caps("How the CPU uses them")
+                    Caps("CPU 如何使用这些上限")
                     envelope
-                    Text("Higher limits are faster but louder and hotter. ROG Control keeps them in order and within the firmware range for this power source.")
+                    Text("上限越高越快，但更吵也更热。ROG 控制中心会保持「瞬时 ≥ 短时 ≥ 持续」的次序，并限制在当前供电方式对应的固件范围内。")
                         .font(.system(size: 11)).foregroundStyle(T.dim).fixedSize(horizontal: false, vertical: true)
                 }
             }
             HStack(spacing: 10) {
                 if m.manualDirty {
                     Image(systemName: "circle.dashed").font(.system(size: 11, weight: .bold)).foregroundStyle(T.amber)
-                    Text("Not saved").font(.system(size: 12)).foregroundStyle(T.amber)
+                    Text("未保存").font(.system(size: 12)).foregroundStyle(T.amber)
                 } else {
                     Image(systemName: m.customReady ? "checkmark" : "circle").font(.system(size: 11, weight: .bold)).foregroundStyle(T.dim)
-                    Text(m.activeMode == .manual ? "Saved and in use" : m.customReady ? "Saved. Choose Custom to use it." : "Not set up yet")
+                    Text(m.activeMode == .manual ? "已保存并生效" : m.customReady ? "已保存。选择「自定义」即可启用。" : "尚未设置")
                         .font(.system(size: 12)).foregroundStyle(T.dim)
                 }
                 Spacer()
-                Button { m.resetCustom() } label: { Text("Reset").font(.system(size: 12, weight: .medium)).padding(.horizontal, 16).frame(height: 30) }
+                Button { m.resetCustom() } label: { Text("重置").font(.system(size: 12, weight: .medium)).padding(.horizontal, 16).frame(height: 30) }
                     .buttonStyle(RogButtonStyle(cut: 7)).disabled(!m.manualDirty)
-                Button { m.saveCustom() } label: { Text("Save to Custom").font(.system(size: 12, weight: .semibold)).padding(.horizontal, 16).frame(height: 30) }
+                Button { m.saveCustom() } label: { Text("保存为自定义").font(.system(size: 12, weight: .semibold)).padding(.horizontal, 16).frame(height: 30) }
                     .buttonStyle(RogButtonStyle(prominent: true, cut: 7)).keyboardShortcut(.defaultAction)
             }
             .padding(.top, 20)
@@ -1821,15 +1835,15 @@ struct LimitsEditor: View {
                 Text("W").font(.system(size: 11)).foregroundStyle(T.dim)
             }
             RogSlider(name: name, value: v, range: range)
-            Text("\(desc) · \(range.0) to \(range.1) W").font(.system(size: 11)).foregroundStyle(T.dim)
+            Text("\(desc) · \(range.0)–\(range.1) W").font(.system(size: 11)).foregroundStyle(T.dim)
         }
     }
     // Burst, short boost and sustained as one picture: height is the limit, width is roughly how long it lasts
     var envelope: some View {
         let top = Double(max(m.settings.fppt, m.settings.sppt, m.settings.spl, 1))
-        let blocks: [(String, String, Int, CGFloat, Double)] = [("Burst", "seconds", m.settings.fppt, 0.16, 0.95),
-                                                                ("Short boost", "minutes", m.settings.sppt, 0.32, 0.65),
-                                                                ("Sustained", "as long as needed", m.settings.spl, 0.52, 0.40)]
+        let blocks: [(String, String, Int, CGFloat, Double)] = [("瞬时", "数秒", m.settings.fppt, 0.16, 0.95),
+                                                                ("短时增强", "数分钟", m.settings.sppt, 0.32, 0.65),
+                                                                ("持续", "按需", m.settings.spl, 0.52, 0.40)]
         return GeometryReader { g in
             HStack(alignment: .bottom, spacing: 2) {
                 ForEach(blocks.indices, id: \.self) { i in
@@ -1850,7 +1864,7 @@ struct LimitsEditor: View {
         }
         .frame(height: 210).padding(.bottom, 8)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Burst \(m.settings.fppt) watts for seconds, short boost \(m.settings.sppt) watts for minutes, sustained \(m.settings.spl) watts")
+        .accessibilityLabel("瞬时 \(m.settings.fppt) W 持续数秒，短时增强 \(m.settings.sppt) W 持续数分钟，持续 \(m.settings.spl) W")
     }
 }
 
@@ -1860,16 +1874,16 @@ struct FanCurves: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Caps("\(m.curveMode.title) mode")
+                Caps("\(m.curveMode.title)模式")
                 Spacer()
-                Pills(items: ["CPU", "GPU"], selected: fan, minWidth: 40, label: "Fan") { fan = $0 }
+                Pills(items: ["CPU", "GPU"], selected: fan, minWidth: 40, label: "风扇") { fan = $0 }
             }
             Group {
                 if let bytes = fan == 0 ? m.curve : m.gpuCurve { CurveChart(c: bytes) }
-                else { Text("The firmware did not return a fan curve.").font(.system(size: 12)).foregroundStyle(T.dim).frame(height: 120) }
+                else { Text("固件未返回风扇曲线。").font(.system(size: 12)).foregroundStyle(T.dim).frame(height: 120) }
             }
             .padding(.top, 10)
-            Text("Read from the firmware: fan speed by temperature. A reference, not live fan speed.")
+            Text("读取自固件：风扇转速随温度变化。仅供参考，不是实时转速。")
                 .font(.system(size: 11)).foregroundStyle(T.dim).padding(.top, 6)
         }
     }
@@ -1889,24 +1903,24 @@ enum SlashAnim {
         func near(_ pos: Double, _ w: Double) -> Double { max(0, 1 - abs(Double(i) - pos) / w) }
         let dim = 0.12
         switch Slash.modes[min(mode, Slash.modes.count - 1)] {
-        case "Static": return 1
-        case "Bounce": return near(tri(p) * (n - 1), 1.3)
-        case "Slash": return near(p * (n + 2) - 1.5, 1.6)
-        case "Loading": return Double(i) < p * (n + 1) ? 1 : dim
-        case "Bit Stream":
+        case "静态": return 1
+        case "弹跳": return near(tri(p) * (n - 1), 1.3)
+        case "斜切": return near(p * (n + 2) - 1.5, 1.6)
+        case "加载": return Double(i) < p * (n + 1) ? 1 : dim
+        case "比特流":
             var h = UInt64(i * 7919 + Int(t * 6) * 104729); h ^= h >> 13; h &*= 0x5bd1e995; h ^= h >> 15
             return h % 3 == 0 ? 1 : dim
-        case "Transmission": return max(near((p * n * 2).truncatingRemainder(dividingBy: n + 1) - 0.5, 0.9), dim)
-        case "Flow": return 0.15 + 0.85 * (0.5 + 0.5 * sin(2 * .pi * (p * 2 - x)))
-        case "Flux": return (i + Int(p * 6)) % 2 == 0 ? 1 : 0.18
-        case "Phantom": return sin(.pi * p)
-        case "Spectrum": return 0.15 + 0.85 * (x + p).truncatingRemainder(dividingBy: 1)
-        case "Hazard": return Int(p * 6) % 2 == 0 ? 1 : 0
-        case "Interfacing": return abs(x - 0.5) * 2 >= 1 - tri(p) ? 1 : dim
-        case "Ramp": return x <= tri(p) ? 1 : dim
-        case "Game Over": return p < 0.5 ? (Int(p * 8) % 2 == 0 ? 1 : 0) : max(0, 1 - (p - 0.5) * 2)
-        case "Start": return abs(x - 0.5) * 2 <= p * 1.1 ? 1 : dim
-        case "Buzzer": return Int(p * 14) % 2 == 0 ? 1 : 0.1
+        case "传输": return max(near((p * n * 2).truncatingRemainder(dividingBy: n + 1) - 0.5, 0.9), dim)
+        case "流动": return 0.15 + 0.85 * (0.5 + 0.5 * sin(2 * .pi * (p * 2 - x)))
+        case "通量": return (i + Int(p * 6)) % 2 == 0 ? 1 : 0.18
+        case "幻影": return sin(.pi * p)
+        case "光谱": return 0.15 + 0.85 * (x + p).truncatingRemainder(dividingBy: 1)
+        case "警示": return Int(p * 6) % 2 == 0 ? 1 : 0
+        case "接口": return abs(x - 0.5) * 2 >= 1 - tri(p) ? 1 : dim
+        case "斜坡": return x <= tri(p) ? 1 : dim
+        case "游戏结束": return p < 0.5 ? (Int(p * 8) % 2 == 0 ? 1 : 0) : max(0, 1 - (p - 0.5) * 2)
+        case "启动": return abs(x - 0.5) * 2 <= p * 1.1 ? 1 : dim
+        case "蜂鸣": return Int(p * 14) % 2 == 0 ? 1 : 0.1
         default: return 1
         }
     }
@@ -1929,7 +1943,7 @@ struct LidPreview: View {
         }
         .aspectRatio(1.55, contentMode: .fit)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Lid preview: Slash \(bright > 0 ? Slash.modes[min(mode, Slash.modes.count - 1)] : "off")")
+        .accessibilityLabel("顶盖预览：Slash \(bright > 0 ? Slash.modes[min(mode, Slash.modes.count - 1)] : "关")")
     }
     func strip(_ t: Double) -> some View {
         let gain = [0, 0.45, 0.75, 1.0][min(max(bright, 0), 3)]
@@ -1958,7 +1972,7 @@ struct SlashEditor: View {
                                interval: slash.interval)
                         .frame(width: 340)
                     Text(caption).font(.system(size: 11)).foregroundStyle(T.dim)
-                    Text("A drawing of the lid. The real Slash may look slightly different.").font(.system(size: 10.5)).foregroundStyle(T.faint)
+                    Text("顶盖示意图，实际 Slash 灯效可能略有差异。").font(.system(size: 10.5)).foregroundStyle(T.faint)
                 }
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 8) {
                     ForEach(Slash.modes.indices, id: \.self) { i in
@@ -1977,20 +1991,20 @@ struct SlashEditor: View {
                 .frame(maxWidth: .infinity)
             }
             HStack {
-                Text("Pause between runs").font(.system(size: 12)).foregroundStyle(T.text); Spacer()
-                Pills(items: (0...5).map(String.init), selected: slash.interval, minWidth: 24, label: "Pause") {
+                Text("循环间隔").font(.system(size: 12)).foregroundStyle(T.text); Spacer()
+                Pills(items: (0...5).map(String.init), selected: slash.interval, minWidth: 24, label: "间隔") {
                     var s = slash; s.interval = $0; m.setSlash(s)
                 }
                 .disabled(slash.bright == 0).opacity(slash.bright == 0 ? 0.5 : 1)
             }
             .padding(.top, 16)
-            Text("Fn+F4 turns Slash on and off.").font(.system(size: 11)).foregroundStyle(T.dim).padding(.top, 10)
+            Text("Fn+F4 可开关 Slash 灯效。").font(.system(size: 11)).foregroundStyle(T.dim).padding(.top, 10)
             ErrorLine(text: m.lightingError).padding(.top, 6)
         }
     }
     var caption: String {
-        if let h = hovered { return "Preview: \(Slash.modes[h]). Click to use it." }
-        return slash.bright > 0 ? "On the lid now: \(Slash.modes[min(slash.mode, Slash.modes.count - 1)])" : "Slash is off"
+        if let h = hovered { return "预览：\(Slash.modes[h])。点击应用。" }
+        return slash.bright > 0 ? "当前顶盖效果：\(Slash.modes[min(slash.mode, Slash.modes.count - 1)])" : "Slash 已关闭"
     }
 }
 
@@ -1999,31 +2013,31 @@ struct BatteryDetails: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
-                preset(60, "Desk", "Plugged in most of the day. Kindest to the battery.")
-                preset(80, "Everyday", "Good balance of runtime and battery life.")
-                preset(100, "Travel", "Full charge for a long day away from a socket.")
+                preset(60, "办公", "大部分时间插着电。对电池最友好。")
+                preset(80, "日常", "续航与电池寿命兼顾。")
+                preset(100, "出行", "长时间离电时充满。")
             }
             .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 10) {
                 Card(pad: 14, stretch: true) {
-                    Caps("Health")
+                    Caps("健康度")
                     HStack(alignment: .firstTextBaseline, spacing: 2) {
                         Text(verbatim: m.st.batDesign > 5 && m.st.batFull > 0 ? String(format: "%.0f", 100.0 * Double(m.st.batFull) / Double(m.st.batDesign)) : "–")
                             .font(T.num(24)).foregroundStyle(T.text)
                         Text("%").font(T.num(12)).foregroundStyle(T.dim)
                     }
                     .padding(.top, 6)
-                    Text(m.st.batFull > 0 ? "\(String(m.st.batFull)) of \(String(m.st.batDesign)) mAh design capacity" : "Not reported by the firmware")
+                    Text(m.st.batFull > 0 ? "\(String(m.st.batFull)) / \(String(m.st.batDesign)) mAh 设计容量" : "固件未报告")
                         .font(.system(size: 11)).foregroundStyle(T.dim)
                 }
                 Card(pad: 14, stretch: true) {
-                    Caps("Now")
+                    Caps("当前")
                     HStack(alignment: .firstTextBaseline, spacing: 2) {
                         Text(verbatim: String(m.st.batRate)).font(T.num(24)).foregroundStyle(T.text)
                         Text("mA").font(T.num(12)).foregroundStyle(T.dim)
                     }
                     .padding(.top, 6)
-                    Text(m.st.batState & 2 != 0 ? "Charging" : m.st.batState & 1 != 0 ? "Discharging" : "Not charging, held at the limit")
+                    Text(m.st.batState & 2 != 0 ? "充电中" : m.st.batState & 1 != 0 ? "放电中" : "未充电，保持在设定上限")
                         .font(.system(size: 11)).foregroundStyle(T.dim)
                 }
             }
@@ -2038,7 +2052,7 @@ struct BatteryDetails: View {
                 HStack {
                     Text("\(v)%").font(T.num(20)).foregroundStyle(active ? T.red : T.text)
                     Spacer()
-                    if active { Text("ACTIVE").font(.system(size: 9, weight: .bold)).tracking(1.2).foregroundStyle(T.red) }
+                    if active { Text("已启用").font(.system(size: 9, weight: .bold)).tracking(1.2).foregroundStyle(T.red) }
                 }
                 Text(name).font(.system(size: 13, weight: .semibold)).foregroundStyle(T.text).padding(.top, 8)
                 Text(desc).font(.system(size: 11)).foregroundStyle(T.dim).fixedSize(horizontal: false, vertical: true).padding(.top, 2)
@@ -2048,7 +2062,7 @@ struct BatteryDetails: View {
         .buttonStyle(.plain)
         .disabled(m.st.charge == nil)
         .animation(.easeOut(duration: 0.18), value: active)
-        .accessibilityLabel("\(name), \(v) percent").accessibilityAddTraits(active ? .isSelected : [])
+        .accessibilityLabel("\(name)，\(v)%").accessibilityAddTraits(active ? .isSelected : [])
     }
 }
 
@@ -2058,18 +2072,19 @@ struct SettingsEditor: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Open at login").font(.system(size: 13, weight: .medium)).foregroundStyle(T.text)
-                    Text("Runs in the menu bar. Closing this window keeps hardware control active.").font(.system(size: 11)).foregroundStyle(T.dim)
+                    Text("登录时启动").font(.system(size: 13, weight: .medium)).foregroundStyle(T.text)
+                    Text("常驻菜单栏。关闭此窗口后硬件控制仍然有效。").font(.system(size: 11)).foregroundStyle(T.dim)
                 }
                 Spacer()
-                Toggle("Open at login", isOn: Binding(get: { m.loginEnabled }, set: { m.setLogin($0) })).toggleStyle(.switch).labelsHidden().tint(T.red)
+                Toggle("登录时启动", isOn: Binding(get: { m.loginEnabled }, set: { m.setLogin($0) })).toggleStyle(.switch).labelsHidden().tint(T.red)
             }
             Rectangle().fill(T.line).frame(height: 1).padding(.vertical, 14)
-            row("Model") { Text("ROG Zephyrus G14 · GA403WM").foregroundStyle(T.dim) }
-            row("Version") { Text(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev").foregroundStyle(T.dim) }
-            row("Created by") { Link("thanhnndev", destination: URL(string: "https://github.com/thanhnndev")!).foregroundStyle(T.red) }
-            row("Inspired by", last: true) { Link("asusctl and asus-linux", destination: URL(string: "https://asus-linux.org")!).foregroundStyle(T.red) }
-            Text("Settings are saved separately for the charger and the battery, and restored when the power source changes.")
+            row("机型") { Text("ROG \(Machine.line)").foregroundStyle(T.dim) }
+            row("SMBIOS") { Text(Machine.smbios ?? "–").foregroundStyle(T.dim) }
+            row("版本") { Text(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev").foregroundStyle(T.dim) }
+            row("作者") { Link("thanhnndev", destination: URL(string: "https://github.com/thanhnndev")!).foregroundStyle(T.red) }
+            row("灵感来源", last: true) { Link("asusctl and asus-linux", destination: URL(string: "https://asus-linux.org")!).foregroundStyle(T.red) }
+            Text("接电源与用电池的设置分别保存，切换供电方式时自动恢复。")
                 .font(.system(size: 11)).foregroundStyle(T.dim).fixedSize(horizontal: false, vertical: true).padding(.top, 10)
         }
     }
@@ -2088,7 +2103,7 @@ struct DoctorCheck: Identifiable {
         static func < (a: Level, b: Level) -> Bool { a.rawValue < b.rawValue }
         var color: Color { self == .ok ? .green : self == .info ? T.dim : self == .warn ? T.amber : T.red }
         var icon: String { self == .ok ? "checkmark.circle.fill" : self == .info ? "info.circle.fill" : self == .warn ? "exclamationmark.triangle.fill" : "xmark.octagon.fill" }
-        var word: String { self == .ok ? "OK" : self == .info ? "Info" : self == .warn ? "Check" : "Problem" }
+        var word: String { self == .ok ? "正常" : self == .info ? "信息" : self == .warn ? "注意" : "问题" }
     }
     struct Fix { let label: String; let run: @MainActor () -> Void }
     // a fix the user finishes in System Settings: numbered steps, each with its own button
@@ -2102,6 +2117,11 @@ struct DoctorCheck: Identifiable {
 @MainActor
 enum Doctor {
     static let groups = ["Driver", "Fn keys", "Audio", "Microphone and camera", "System"]
+    // 分组名只用于显示；数组本身是内部键，add() 与各处过滤都按英文键匹配
+    static func groupDisplay(_ g: String) -> String {
+        ["Driver": "驱动", "Fn keys": "Fn 按键", "Audio": "音频",
+         "Microphone and camera": "麦克风与摄像头", "System": "系统"][g] ?? g
+    }
     static let rogkeydID = "com.itlmt7925.rogkeyd", rogaudiodID = "com.itlmt7925.rogaudiod"
 
     static func kextVersion(_ id: String) -> String? {
@@ -2115,10 +2135,10 @@ enum Doctor {
         return d["CFBundleVersion"] as? String
     }
     static func pref(_ pane: String) -> Fix {
-        Fix(label: "Open Settings") { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)")!) }
+        Fix(label: "打开设置") { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)")!) }
     }
     static func kickstart(_ label: String, _ name: String) -> Fix {
-        Fix(label: "Restart \(name)") {
+        Fix(label: "重启 \(name)") {
             let p = Process(); p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
             p.arguments = ["kickstart", "-k", "gui/\(getuid())/\(label)"]; try? p.run()
         }
@@ -2135,26 +2155,26 @@ enum Doctor {
     // Input Monitoring / Accessibility for rogkeyd. A rebuilt rogkeyd keeps its name in the list but the old grant no longer
     // matches it, so the entry is reset first; rogkeyd then asks again at its restart and shows up switched off.
     static func permissionGuide(service: String, pane: String, name: String) -> [DoctorCheck.Step] {
-        [DoctorCheck.Step(title: "Reset rogkeyd's old entry",
-                          detail: "Takes the stale rogkeyd off the \(name) list and restarts it, so macOS asks again for this build.",
-                          button: "Reset") {
+        [DoctorCheck.Step(title: "清除 rogkeyd 的旧记录",
+                          detail: "把过期的 rogkeyd 从「\(name)」列表中移除并重启它，这样 macOS 会为当前版本重新询问权限。",
+                          button: "清除") {
             let r = shell("/usr/bin/tccutil", ["reset", service, rogkeydID])
             restartKeyd()
-            return r == 0 ? "Done. macOS may now ask about rogkeyd: choose Open System Settings." : "Could not reset it: in \(name) select rogkeyd and press −."
+            return r == 0 ? "已清除。macOS 可能会询问 rogkeyd 权限：请选择「打开系统设置」。" : "清除失败：请在「\(name)」中选中 rogkeyd 并按 −。"
          },
-         DoctorCheck.Step(title: "Turn rogkeyd on in \(name)",
-                          detail: "Switch rogkeyd on. If it is not in the list, drag rogkeyd.app from the Finder window into it (its path is on the clipboard for + and ⌘⇧G).",
-                          button: "Open \(name)") {
+         DoctorCheck.Step(title: "在「\(name)」中启用 rogkeyd",
+                          detail: "打开 rogkeyd 开关。若列表中没有它，把访达窗口里的 rogkeyd.app 拖进去（路径已复制到剪贴板，可用 + 或 ⌘⇧G 定位）。",
+                          button: "打开「\(name)」") {
             NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)")!)
             NSWorkspace.shared.activateFileViewerSelecting([rogkeydApp])
             NSPasteboard.general.clearContents(); NSPasteboard.general.setString(rogkeydApp.path, forType: .string)
-            return "Settings and Finder are open; the path is on the clipboard."
+            return "系统设置和访达已打开，路径已复制到剪贴板。"
          },
-         DoctorCheck.Step(title: "Restart rogkeyd and check",
-                          detail: "A permission counts only after rogkeyd restarts. If macOS asks to quit and reopen it, choose Later and press this.",
-                          button: "Restart and check") {
+         DoctorCheck.Step(title: "重启 rogkeyd 并检查",
+                          detail: "权限只有在 rogkeyd 重启后才生效。如果 macOS 提示退出并重新打开，请选择「稍后」再点此按钮。",
+                          button: "重启并检查") {
             restartKeyd()
-            return "Restarted. Checking in a few seconds…"
+            return "已重启，几秒后自动复查…"
          }]
     }
     // a LaunchAgent with a PID: rogkeyd never starts NSApplication, so NSRunningApplication does not list it
@@ -2226,89 +2246,89 @@ enum Doctor {
         // driver
         let loaded = kextVersion("com.itlmt7925.asuswmi")
         if !st.present {
-            add("Driver", "AsusWmi", loaded == nil ? "Not loaded. It loads at boot through OpenCore (EFI/OC/Kexts)." : "Loaded (\(loaded!)) but the app cannot open it.", .fail)
+            add("Driver", "AsusWmi", loaded == nil ? "未加载。它通过 OpenCore（EFI/OC/Kexts）在开机时加载。" : "已加载（\(loaded!))，但应用无法打开它。", .fail)
         } else if st.abi < Asus.abi {
-            add("Driver", "AsusWmi \(loaded ?? "")", "Older interface (ABI \(st.abi), this app speaks \(Asus.abi)): Aura needs the newer driver. Restart after installing it.", .warn)
+            add("Driver", "AsusWmi \(loaded ?? "")", "接口版本较旧（ABI \(st.abi)，本应用使用 \(Asus.abi)）：Aura 需要更新的驱动，安装后请重启。", .warn)
         } else {
-            add("Driver", "AsusWmi \(loaded ?? "")", "Loaded, interface ABI \(st.abi).", .ok)
+            add("Driver", "AsusWmi \(loaded ?? "")", "已加载，接口 ABI \(st.abi)。", .ok)
         }
         if let esp = espAsusWmi() {
-            if let l = loaded, l != esp { add("Driver", "Driver update waiting", "The ESP has AsusWmi \(esp), \(l) is running. Restart to load it.", .warn) }
-            else { add("Driver", "ESP copy", "EFI/OC/Kexts has the running version.", .ok) }
+            if let l = loaded, l != esp { add("Driver", "驱动更新待生效", "ESP 中的 AsusWmi 为 \(esp)，当前运行的是 \(l)。重启后生效。", .warn) }
+            else { add("Driver", "ESP 副本", "EFI/OC/Kexts 中即为当前运行版本。", .ok) }
         } else {
-            add("Driver", "ESP copy", "The EFI partition is not mounted, so the installed version was not compared.", .info)
+            add("Driver", "ESP 副本", "EFI 分区未挂载，无法比对已安装版本。", .info)
         }
-        add("Driver", "N-KEY keyboard", st.hid ? "Found (USB 0b05:19b6): keyboard light, Aura and Slash work." : "Not seen yet. It is found on the first lighting command.", st.hid ? .ok : .info)
+        add("Driver", "N-KEY keyboard", st.hid ? "已找到（USB 0b05:19b6）：键盘背光、Aura 与 Slash 均可用。" : "尚未检测到，发送第一条灯效指令后即可识别。", st.hid ? .ok : .info)
 
         // Fn keys
         let keyd = agentRunning(rogkeydID)
         let installed = FileManager.default.fileExists(atPath: FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/RogControl/rogkeyd.app").path)
-        if !installed { add("Fn keys", "rogkeyd", "Not installed: the Fn keys (except mute and volume) do nothing. Install with scripts/build-rogkeys.sh --install.", .fail) }
-        else if !keyd { add("Fn keys", "rogkeyd", "Installed but not running.", .fail, kickstart(rogkeydID, "rogkeyd")) }
+        if !installed { add("Fn keys", "rogkeyd", "未安装：Fn 键（静音和音量除外）不起作用。请用 scripts/build-rogkeys.sh --install 安装。", .fail) }
+        else if !keyd { add("Fn keys", "rogkeyd", "已安装但未运行。", .fail, kickstart(rogkeydID, "rogkeyd")) }
         else {
             let log = rogkeydLog()
             switch log.reading {
-            case true?: add("Fn keys", "Input Monitoring", "rogkeyd reads the N-KEY keyboard.", .ok)
-            case false?: add("Fn keys", "Input Monitoring", "rogkeyd has no access, so the Fn keys do nothing. In Input Monitoring remove rogkeyd (−), add it again (+), then restart it. A new rogkeyd build always needs this.",
+            case true?: add("Fn keys", "输入监控", "rogkeyd 正在读取 N-KEY 键盘。", .ok)
+            case false?: add("Fn keys", "输入监控", "rogkeyd 没有权限，Fn 键不起作用。请在「输入监控」中先移除 rogkeyd（−），再重新添加（+），然后重启它。每次重新编译 rogkeyd 都需要这样做。",
                              .fail, nil)
-                c[c.count - 1].guide = permissionGuide(service: "ListenEvent", pane: "Privacy_ListenEvent", name: "Input Monitoring")
-            case nil: add("Fn keys", "Input Monitoring", "rogkeyd has not reported yet.", .info)
+                c[c.count - 1].guide = permissionGuide(service: "ListenEvent", pane: "Privacy_ListenEvent", name: "输入监控")
+            case nil: add("Fn keys", "输入监控", "rogkeyd 尚未上报状态。", .info)
             }
             switch log.tap {
-            case true?: add("Fn keys", "Accessibility (Fn+F9)", "Fn+F9 opens Displays and its Cmd+P is dropped. A Cmd+P you type still prints.", .ok)
-            case false?: add("Fn keys", "Accessibility (Fn+F9)", "Fn+F9 opens Displays, but its Cmd+P also reaches the app (Print dialog). Allow rogkeyd in Accessibility.", .warn)
-                c[c.count - 1].guide = permissionGuide(service: "Accessibility", pane: "Privacy_Accessibility", name: "Accessibility")
-            case nil: add("Fn keys", "Accessibility (Fn+F9)", "rogkeyd has not reported its event tap.", .info)
+            case true?: add("Fn keys", "辅助功能（Fn+F9）", "Fn+F9 会打开显示器设置，其 Cmd+P 被拦截；你手动按的 Cmd+P 仍可打印。", .ok)
+            case false?: add("Fn keys", "辅助功能（Fn+F9）", "Fn+F9 会打开显示器设置，但其 Cmd+P 也会传给应用（弹出打印对话框）。请在「辅助功能」中允许 rogkeyd。", .warn)
+                c[c.count - 1].guide = permissionGuide(service: "Accessibility", pane: "Privacy_Accessibility", name: "辅助功能")
+            case nil: add("Fn keys", "辅助功能（Fn+F9）", "rogkeyd 尚未上报事件监听状态。", .info)
             }
         }
         if st.present, let k = Sensors.hotkey() {
-            add("Fn keys", "Keys reaching AsusWmi", k.sequence == 0 ? "None since boot. Press Fn+F2 to test." : "\(k.sequence) since boot, last code \(String(format: "%02X", k.code)).", k.sequence == 0 ? .info : .ok)
+            add("Fn keys", "按键是否到达 AsusWmi", k.sequence == 0 ? "开机以来没有收到。按 Fn+F2 测试。" : "开机以来 \(k.sequence) 次，最后一个码 \(String(format: "%02X", k.code))。", k.sequence == 0 ? .info : .ok)
         }
 
         // audio
         let hda = kextVersion("cn.laobamac.SimpleHDA")
-        add("Audio", "SimpleHDA", hda.map { "Loaded (\($0)): the speakers and jack have a driver." } ?? "Not loaded: no built-in audio device.", hda == nil ? .fail : .ok)
-        if !snd.rog { add("Audio", "ROG Speakers", "Device missing: RogAudio.driver is not installed, the sound profile is off.", .warn) }
-        else if !snd.daemon { add("Audio", "rogaudiod", "Not running: ROG Speakers plays nothing.", .fail, kickstart(rogaudiodID, "rogaudiod")) }
-        else { add("Audio", "rogaudiod", snd.chain ? "Running, the sound profile is on." : "Running, speakers idle (it starts when ROG Speakers plays).", .ok) }
+        add("Audio", "SimpleHDA", hda.map { "已加载（\($0)）：扬声器与耳机孔已有驱动。" } ?? "未加载：没有内置音频设备。", hda == nil ? .fail : .ok)
+        if !snd.rog { add("Audio", "ROG Speakers", "设备缺失：未安装 RogAudio.driver，音效不可用。", .warn) }
+        else if !snd.daemon { add("Audio", "rogaudiod", "未运行：ROG 扬声器没有声音。", .fail, kickstart(rogaudiodID, "rogaudiod")) }
+        else { add("Audio", "rogaudiod", snd.chain ? "运行中，音效已启用。" : "运行中，扬声器空闲（有声音播放时才启动）。", .ok) }
         if let o = snd.output {
             let rogOut = snd.outputs.first(where: \.isRogSpeakers)
-            add("Audio", "Output", o.isRogSpeakers ? "ROG Speakers." : "\(o.name): the sound profile only runs on ROG Speakers.", o.isRogSpeakers ? .ok : .info,
-                o.isRogSpeakers || rogOut == nil ? nil : Fix(label: "Use ROG Speakers") { m.setOutput(rogOut!) })
-        } else { add("Audio", "Output", "No output device.", .fail) }
+            add("Audio", "输出", o.isRogSpeakers ? "ROG 扬声器。" : "\(o.name)：音效只在 ROG 扬声器上生效。", o.isRogSpeakers ? .ok : .info,
+                o.isRogSpeakers || rogOut == nil ? nil : Fix(label: "改用 ROG 扬声器") { m.setOutput(rogOut!) })
+        } else { add("Audio", "输出", "无输出设备。", .fail) }
 
         // mic and camera
         switch snd.micMuted {
-        case nil: add("Microphone and camera", "Microphone", "No built-in microphone found.", .warn)
-        case true?: add("Microphone and camera", "Microphone", "Muted (M3 or the switch in the window).", .info, Fix(label: "Unmute") { m.setMicMute(false) })
-        case false?: add("Microphone and camera", "Microphone", snd.clearMic ? "On, Clear Mic noise reduction on." : "On, Clear Mic off.", .ok)
+        case nil: add("Microphone and camera", "麦克风", "未找到内置麦克风。", .warn)
+        case true?: add("Microphone and camera", "麦克风", "已静音（M3 键或窗口中的开关）。", .info, Fix(label: "取消静音") { m.setMicMute(false) })
+        case false?: add("Microphone and camera", "麦克风", snd.clearMic ? "开启，降噪已开。" : "开启，降噪已关。", .ok)
         }
-        add("Microphone and camera", "Camera", snd.camera.map { "\($0) found." } ?? "No camera found.", snd.camera == nil ? .warn : .ok)
+        add("Microphone and camera", "摄像头", snd.camera.map { "已找到 \($0)。" } ?? "未找到摄像头。", snd.camera == nil ? .warn : .ok)
 
         // system
         let p = panics()
         if let last = p.first {
             let f = DateFormatter(); f.dateStyle = .short; f.timeStyle = .short
             let day = Date().timeIntervalSince(last.date) < 86400, live = panicStillLoaded(last)
-            add("System", "Kernel panics", "\(p.count) in 7 days, last \(f.string(from: last.date))\(last.kext.map { ", in \($0)" } ?? "")"
-                + (live ? "." : ". That build is no longer loaded."),
-                day && live ? .warn : .info, Fix(label: "Show") { NSWorkspace.shared.activateFileViewerSelecting([last.url]) })
-        } else { add("System", "Kernel panics", "None in 7 days.", .ok) }
+            add("System", "内核崩溃", "7 天内 \(p.count) 次，最近一次 \(f.string(from: last.date))\(last.kext.map { "，涉及 \($0)" } ?? "")"
+                + (live ? "。" : "。该版本已不再加载。"),
+                day && live ? .warn : .info, Fix(label: "显示") { NSWorkspace.shared.activateFileViewerSelecting([last.url]) })
+        } else { add("System", "内核崩溃", "7 天内没有。", .ok) }
         if st.batDesign > 0 && st.batFull > 0 {
             let h = Int((Double(st.batFull) / Double(st.batDesign) * 100).rounded())
-            add("System", "Battery health", "\(h) % of design (\(st.batFull) of \(st.batDesign) mAh).", h < 80 ? .warn : .ok)
+            add("System", "电池健康度", "为设计容量的 \(h)%（\(st.batFull) / \(st.batDesign) mAh）。", h < 80 ? .warn : .ok)
         }
-        add("System", "Open at login", m.loginEnabled ? "On: modes and limits come back after a restart." : "Off: after a restart the firmware defaults stay until you open the app.",
-            m.loginEnabled ? .ok : .warn, m.loginEnabled ? nil : Fix(label: "Turn on") { m.setLogin(true) })
+        add("System", "登录时启动", m.loginEnabled ? "已开启：重启后模式与功耗上限会自动恢复。" : "已关闭：重启后固件默认值会保持，直到你打开应用。",
+            m.loginEnabled ? .ok : .warn, m.loginEnabled ? nil : Fix(label: "开启") { m.setLogin(true) })
         return c
     }
     static func report(_ c: [DoctorCheck]) -> String {
-        var out = "ROG Control \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev") Doctor, \(Date())\n"
+        var out = "ROG 控制中心 \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev") 体检报告，\(Date())\n"
         for g in groups {
             let rows = c.filter { $0.group == g }
             guard !rows.isEmpty else { continue }
-            out += "\n\(g)\n"
+            out += "\n\(groupDisplay(g))\n"
             for r in rows { out += "  [\(r.level.word)] \(r.title): \(r.detail)\n" }
         }
         return out
@@ -2328,18 +2348,18 @@ struct DoctorView: View {
                 Image(systemName: issues == 0 ? "checkmark.seal.fill" : "stethoscope").font(.system(size: 20))
                     .foregroundStyle(issues == 0 ? Color.green : (m.doctor.map(\.level).max() ?? .ok).color)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(issues == 0 ? "Everything checks out" : issues == 1 ? "1 thing to fix" : "\(issues) things to fix")
+                    Text(issues == 0 ? "全部正常" : issues == 1 ? "1 项待处理" : "\(issues) 项待处理")
                         .font(.system(size: 14, weight: .semibold)).foregroundStyle(T.text)
-                    Text("\(m.doctor.count) checks: drivers, Fn keys, audio, microphone, camera and system").font(.system(size: 11)).foregroundStyle(T.dim)
+                    Text("\(m.doctor.count) 项检查：驱动、Fn 键、音频、麦克风、摄像头与系统").font(.system(size: 11)).foregroundStyle(T.dim)
                 }
                 Spacer()
-                Button { m.runDoctor() } label: { Label("Run again", systemImage: "arrow.clockwise").font(.system(size: 12)).padding(.horizontal, 10).frame(height: 28) }
+                Button { m.runDoctor() } label: { Label("重新检查", systemImage: "arrow.clockwise").font(.system(size: 12)).padding(.horizontal, 10).frame(height: 28) }
                     .buttonStyle(RogButtonStyle(cut: 6))
                 Button {
                     NSPasteboard.general.clearContents(); NSPasteboard.general.setString(Doctor.report(m.doctor), forType: .string)
                     copied = true
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
-                } label: { Label(copied ? "Copied" : "Copy report", systemImage: copied ? "checkmark" : "doc.on.doc").font(.system(size: 12)).padding(.horizontal, 10).frame(height: 28) }
+                } label: { Label(copied ? "已复制" : "复制报告", systemImage: copied ? "checkmark" : "doc.on.doc").font(.system(size: 12)).padding(.horizontal, 10).frame(height: 28) }
                     .buttonStyle(RogButtonStyle(cut: 6))
             }
             .padding(.bottom, 14)
@@ -2349,7 +2369,7 @@ struct DoctorView: View {
                         let rows = m.doctor.filter { $0.group == g }
                         if !rows.isEmpty {
                             VStack(alignment: .leading, spacing: 6) {
-                                Caps(g)
+                                Caps(Doctor.groupDisplay(g))
                                 VStack(spacing: 0) {
                                     ForEach(Array(rows.enumerated()), id: \.element.id) { i, r in
                                         row(r)
@@ -2378,7 +2398,7 @@ struct DoctorView: View {
             if r.guide != nil {
                 Button { open = open == r.title ? nil : r.title } label: {
                     HStack(spacing: 5) {
-                        Text(open == r.title ? "Hide steps" : "Fix it").font(.system(size: 11.5, weight: .medium))
+                        Text(open == r.title ? "收起步骤" : "修复").font(.system(size: 11.5, weight: .medium))
                         Image(systemName: open == r.title ? "chevron.up" : "chevron.down").font(.system(size: 8, weight: .bold))
                     }
                     .padding(.horizontal, 10).frame(height: 26)
@@ -2566,7 +2586,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         if window == nil {
             let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 600),
                              styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
-            w.title = "ROG Control"
+            w.title = "ROG 控制中心"
             w.styleMask.insert(.fullSizeContentView)
             w.titlebarAppearsTransparent = true
             w.titleVisibility = .hidden
@@ -2592,7 +2612,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     }
     @objc func refreshNow() { model.refresh(); model.loadCurve() }
     @objc func showAbout() {
-        let credits = NSMutableAttributedString(string: "Created by thanhnndev\ngithub.com/thanhnndev\n\nInspired by asusctl and the asus-linux community.",
+        let credits = NSMutableAttributedString(string: "作者：thanhnndev\ngithub.com/thanhnndev\n\n灵感来自 asusctl 与 asus-linux 社区。",
                                                 attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.labelColor])
         credits.addAttribute(.link, value: URL(string: "https://github.com/thanhnndev")!, range: (credits.string as NSString).range(of: "github.com/thanhnndev"))
         NSApp.orderFrontStandardAboutPanel(options: [.credits: credits])
@@ -2602,18 +2622,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         let menu = NSMenu()
         let appItem = NSMenuItem(); menu.addItem(appItem)
         let appMenu = NSMenu(); appItem.submenu = appMenu
-        let about = appMenu.addItem(withTitle: "About ROG Control", action: #selector(showAbout), keyEquivalent: "")
+        let about = appMenu.addItem(withTitle: "关于 ROG 控制中心", action: #selector(showAbout), keyEquivalent: "")
         about.target = self
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Hide ROG Control", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        appMenu.addItem(withTitle: "隐藏 ROG 控制中心", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Quit ROG Control", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenu.addItem(withTitle: "退出 ROG 控制中心", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         let windowItem = NSMenuItem(); menu.addItem(windowItem)
-        let windowMenu = NSMenu(title: "Window"); windowItem.submenu = windowMenu
-        let open = windowMenu.addItem(withTitle: "Open ROG Control", action: #selector(showWindow), keyEquivalent: "0"); open.target = self
-        let refresh = windowMenu.addItem(withTitle: "Refresh", action: #selector(refreshNow), keyEquivalent: "r"); refresh.target = self
-        windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
-        windowMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        let windowMenu = NSMenu(title: "窗口"); windowItem.submenu = windowMenu
+        let open = windowMenu.addItem(withTitle: "打开 ROG 控制中心", action: #selector(showWindow), keyEquivalent: "0"); open.target = self
+        let refresh = windowMenu.addItem(withTitle: "刷新", action: #selector(refreshNow), keyEquivalent: "r"); refresh.target = self
+        windowMenu.addItem(withTitle: "最小化", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        windowMenu.addItem(withTitle: "关闭", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         NSApp.mainMenu = menu
         NSApp.windowsMenu = windowMenu
     }
@@ -2643,8 +2663,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         guard let b = item.button else { return }
         let mode = model.activeMode ?? .performance
         b.image = Self.badgeImage(mode)
-        b.image?.accessibilityDescription = "ROG: \(mode.title)"
-        var tip = "ROG: \(model.modeLabel)"
+        b.image?.accessibilityDescription = "ROG：\(mode.title)"
+        var tip = "ROG：\(model.modeLabel)"
         if let t = model.tctl { tip += String(format: " · CPU %.0f°C", t) }
         if let w = model.watts { tip += String(format: " · %.0f W", w) }
         b.toolTip = tip
@@ -2714,10 +2734,10 @@ enum Snapshot {
         let shots: [(String, RogDialog?)] = [("1-main", nil), ("2-limits", .limits), ("3-fans", .fans), ("4-slash", .slash),
                                              ("5-battery", .battery), ("6-settings", .settings), ("7-doctor", .doctor)]
         // the guided fix, drawn whether or not this machine needs it
-        var demo = DoctorCheck(group: "Fn keys", title: "Input Monitoring", detail: "rogkeyd has no access, so the Fn keys do nothing.", level: .fail)
-        demo.guide = Doctor.permissionGuide(service: "ListenEvent", pane: "Privacy_ListenEvent", name: "Input Monitoring")
+        var demo = DoctorCheck(group: "Fn keys", title: "输入监控", detail: "rogkeyd 没有权限，Fn 键不起作用。", level: .fail)
+        demo.guide = Doctor.permissionGuide(service: "ListenEvent", pane: "Privacy_ListenEvent", name: "输入监控")
         let real = m.doctor
-        m.doctor = real.filter { $0.group != "Driver" && !($0.group == "Fn keys" && $0.title == "Input Monitoring") }
+        m.doctor = real.filter { $0.group != "Driver" && !($0.group == "Fn keys" && $0.title == "输入监控") }
         m.doctor.insert(demo, at: 0)
         DoctorView.initialOpen = demo.title
         m.dialog = .doctor
@@ -2739,7 +2759,7 @@ enum Snapshot {
             NSGraphicsContext.restoreGraphicsState()
             try? rep.representation(using: .png, properties: [:])?.write(to: out.appendingPathComponent("menubar-\(mode.rawValue).png"))
         }
-        print("snapshots in \(out.path)")
+        print("快照已生成：\(out.path)")
     }
 }
 
@@ -2763,14 +2783,14 @@ final class Load {
 
 func bench(seconds: Int) -> Int32 {
     let st0 = Asus.state()
-    guard st0.present else { print("AsusWmi is not loaded"); return 1 }
+    guard st0.present else { print("AsusWmi 未加载"); return 1 }
     let ncpu = ProcessInfo.processInfo.activeProcessorCount
-    print("RogControl bench: \(ncpu) busy threads, \(seconds) s per mode, \(st0.ac ? "on AC" : "on battery"); previous profile \(st0.profile.map(String.init) ?? "?")")
-    print("mode         avg W   max W   Tctl max   CPU fan   GPU fan   Zen5 MHz   Zen5c MHz")
+    print("RogControl 跑分：\(ncpu) 个满载线程，每档 \(seconds) 秒，\(st0.ac ? "接电源" : "用电池")；原性能档 \(st0.profile.map(String.init) ?? "?")")
+    print("模式        平均W   峰值W    最高温    CPU风扇   GPU风扇   Zen5 MHz  Zen5c MHz")
     var modes: [Mode] = [.silent, .performance]
     if st0.ac { modes.append(.turbo) }
     for mode in modes {
-        guard Asus.set(.profile, mode.firmwareProfile) == KERN_SUCCESS else { print("\(mode.title): profile refused"); continue }
+        guard Asus.set(.profile, mode.firmwareProfile) == KERN_SUCCESS else { print("\(mode.title)：模式被拒绝"); continue }
         Thread.sleep(forTimeInterval: 3)                       // let the firmware settle, fans spin down/up a little
         let load = Load(); load.start(ncpu)
         _ = Sensors.read()
@@ -2790,7 +2810,7 @@ func bench(seconds: Int) -> Int32 {
         Thread.sleep(forTimeInterval: 5)                       // cool down between modes
     }
     if let p = st0.profile { Asus.set(.profile, p) }
-    print("previous profile restored (custom fan curves and power limits, if any, are reset; RogControl re-applies its mode at the next power change or start)")
+    print("已恢复原性能档（自定义风扇曲线与功耗上限会被复位；RogControl 会在下次供电变化或启动时重新应用其模式）")
     return 0
 }
 
@@ -2831,7 +2851,7 @@ if !SingleInstance.claim() {
     if !CommandLine.arguments.contains("--background") {
         DistributedNotificationCenter.default().postNotificationName(SingleInstance.showNote, object: nil, userInfo: nil, deliverImmediately: true)
     }
-    print("RogControl is already running: \(CommandLine.arguments.contains("--background") ? "nothing to do" : "asked it to show its window")")
+    print("RogControl 已在运行：\(CommandLine.arguments.contains("--background") ? "无需操作" : "已请求显示窗口")")
     exit(0)
 }
 

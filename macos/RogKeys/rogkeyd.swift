@@ -1,21 +1,24 @@
 // SPDX-License-Identifier: BSD-3-Clause-Clear
 // Copyright (c) 2026 thanhnndev and contributors
 //
-// rogkeyd: the GA403WM Fn keys. The N-KEY keyboard (USB HID 0b05:19b6) sends them as vendor input report 0x5A (one code
-// byte, then 0x00 on release) and Fn+F12 as report 0x03. macOS's keyboard driver drops both. This agent reads them with
-// IOHIDManager, next to Apple's driver, which keeps the keyboard; reading a keyboard needs Input Monitoring for this app.
+// rogkeyd：GA403WM 的 Fn 功能键。N-KEY 键盘（USB HID 0b05:19b6）以厂商输入报告 0x5A 发送（一个码字节，松开时为
+// 0x00），Fn+F12 走报告 0x03。macOS 的键盘驱动会把这两种都丢掉。本守护进程用 IOHIDManager 与 Apple 的驱动并行读取，
+// 键盘仍归 Apple 的驱动管；读取键盘需要为本程序开启「输入监控」权限。
 //
-//   0x7C  M3      built-in microphone mute on / off (CoreAudio)
-//   0x38  M4      opens ROG Control
+//   0x7C  M3      内置麦克风静音开 / 关（CoreAudio）
+//   0x38  M4      打开 ROG 控制中心
 //   0x88  Fn+F12  airplane mode: Wi-Fi and Bluetooth off, then back on as they were (report 0x03)
 //         Fn+F9   the firmware types Win+P (one keyboard report with GUI and P together, GUI then held about 7 s), which
 //                 macOS sees as Cmd+P. rogkeyd opens Displays settings (Win+P is Windows' display switcher) and, with the
 //                 Accessibility grant, drops that Cmd+P and the stuck Cmd so apps do not open a Print dialog.
-//   every code also goes to AsusWmi (user client selector kAsusUcKey, ABI 4), which does the keyboard light (C4 / C5), Slash
-//   (B3), profile (AE), brightness (10 / 20) and sleep (6C), and counts the keys for RogControl.
+//   每个键码同时转发给 AsusWmi（user client 选择子 kAsusUcKey，ABI 4），由它处理键盘背光（C4 / C5）、Slash（B3）、
+//   性能模式（AE）、亮度（10 / 20）与睡眠（6C），并为 RogControl 统计按键次数。
 //
-// Runs as a LaunchAgent (com.itlmt7925.rogkeyd). Log: ~/Library/Logs/rogkeyd.log.
-// One codesign identifier for every build; still, macOS ties an ad-hoc grant to the binary, so a new build needs the grant again.
+// 以 LaunchAgent（com.itlmt7925.rogkeyd）运行。日志：~/Library/Logs/rogkeyd.log。
+// 所有构建共用同一个 codesign 标识；但 macOS 把 ad-hoc 授权绑定到二进制本身，因此重新编译后需要重新授权。
+//
+// 注意：下面这些日志文本是 Doctor 用来解析状态的标记，翻译时必须原样保留：
+//   " start: " / ": open 0x" / ", reading the N-KEY keyboard" / "event tap on" / "no Accessibility access"
 import AppKit
 import CoreAudio
 import CoreWLAN
@@ -32,14 +35,14 @@ var wmi: io_connect_t = 0
 func toWmi(_ code: UInt8) {
     if wmi == 0 {
         let svc = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AsusWmi"))
-        guard svc != 0 else { log("AsusWmi not loaded, key \(String(format: "%02x", code)) dropped"); return }
+        guard svc != 0 else { log("AsusWmi 未加载，按键 \(String(format: "%02x", code)) 已丢弃"); return }
         defer { IOObjectRelease(svc) }
-        guard IOServiceOpen(svc, mach_task_self_, 0, &wmi) == KERN_SUCCESS else { wmi = 0; log("AsusWmi: open failed"); return }
+        guard IOServiceOpen(svc, mach_task_self_, 0, &wmi) == KERN_SUCCESS else { wmi = 0; log("AsusWmi：打开失败"); return }
     }
     var input: [UInt64] = [UInt64(code)]
     let r = IOConnectCallScalarMethod(wmi, 5, &input, 1, nil, nil)
-    if r == kIOReturnUnsupported { log("AsusWmi has no key selector (ABI < 4): reboot with the new AsusWmi") }
-    else if r != kIOReturnSuccess { log(String(format: "AsusWmi key %02x: 0x%08x", code, r)); IOServiceClose(wmi); wmi = 0 }
+    if r == kIOReturnUnsupported { log("AsusWmi 没有按键选择器（ABI < 4）：请换用新版 AsusWmi 后重启") }
+    else if r != kIOReturnSuccess { log(String(format: "AsusWmi 按键 %02x：0x%08x", code, r)); IOServiceClose(wmi); wmi = 0 }
 }
 
 // ---- local actions ------------------------------------------------------------------------------------------------------
@@ -62,19 +65,19 @@ func builtinMic() -> AudioObjectID? {
     }
 }
 func toggleMic() {
-    guard let mic = builtinMic() else { log("M3: no built-in microphone"); return }
+    guard let mic = builtinMic() else { log("M3：未找到内置麦克风"); return }
     var a = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyMute, mScope: kAudioObjectPropertyScopeInput,
                                        mElement: kAudioObjectPropertyElementMain)
     var v: UInt32 = 0, n: UInt32 = 4
-    guard AudioObjectGetPropertyData(mic, &a, 0, nil, &n, &v) == noErr else { log("M3: mic has no mute"); return }
+    guard AudioObjectGetPropertyData(mic, &a, 0, nil, &n, &v) == noErr else { log("M3：麦克风没有静音属性"); return }
     v = v == 0 ? 1 : 0
     let r = AudioObjectSetPropertyData(mic, &a, 0, nil, 4, &v)
-    log(r == noErr ? "M3: microphone \(v == 1 ? "muted" : "on")" : "M3: mute failed \(r)")
+    log(r == noErr ? "M3：麦克风\(v == 1 ? "已静音" : "已开启")" : "M3：静音失败 \(r)")
 }
 func openRogControl() {
     let url = URL(fileURLWithPath: "/Applications/RogControl.app")
     let c = NSWorkspace.OpenConfiguration(); c.activates = true
-    NSWorkspace.shared.openApplication(at: url, configuration: c) { _, e in if let e { log("M4: \(e.localizedDescription)") } }
+    NSWorkspace.shared.openApplication(at: url, configuration: c) { _, e in if let e { log("M4：\(e.localizedDescription)") } }
 }
 // Bluetooth power: IOBluetooth's preference calls (what blueutil uses), looked up at run time.
 let bt = dlopen("/System/Library/Frameworks/IOBluetooth.framework/IOBluetooth", RTLD_LAZY)
@@ -88,21 +91,21 @@ var restoreWiFi = true, restoreBT = true
 func airplane() {
     let w = CWWiFiClient.shared().interface()
     let wifiOn = w?.powerOn() ?? false, btOn = (btGet?() ?? 0) != 0
-    func wifi(_ on: Bool) { do { try w?.setPower(on) } catch { log("Fn+F12: Wi-Fi: \(error.localizedDescription)") } }
+    func wifi(_ on: Bool) { do { try w?.setPower(on) } catch { log("Fn+F12：Wi-Fi：\(error.localizedDescription)") } }
     if wifiOn || btOn {
         restoreWiFi = wifiOn; restoreBT = btOn
         if wifiOn { wifi(false) }
         if btOn { btSet?(0) }
-        log("Fn+F12: airplane mode on (Wi-Fi was \(wifiOn ? "on" : "off"), Bluetooth was \(btOn ? "on" : "off"))")
+        log("Fn+F12：飞行模式已开启（Wi-Fi 原为\(wifiOn ? "开" : "关")，蓝牙原为\(btOn ? "开" : "关")）")
     } else {
         if restoreWiFi { wifi(true) }
         if restoreBT { btSet?(1) }
-        log("Fn+F12: airplane mode off (Wi-Fi \(restoreWiFi ? "on" : "off"), Bluetooth \(restoreBT ? "on" : "off"))")
+        log("Fn+F12：飞行模式已关闭（Wi-Fi \(restoreWiFi ? "开" : "关")，蓝牙 \(restoreBT ? "开" : "关")）")
     }
 }
 func openDisplays() {
     NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Displays-Settings.extension")!)
-    log("Fn+F9: Displays settings")
+    log("Fn+F9：显示器设置")
 }
 
 // ---- Fn+F9's Cmd+P ------------------------------------------------------------------------------------------------------
@@ -139,20 +142,20 @@ func startTap() {
     guard tap == nil else { return }
     let ask = !tapAsked; tapAsked = true                   // the system prompt once; the 10 s timer only checks
     guard AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue(): ask] as CFDictionary) else {
-        if ask { log("no Accessibility access: Fn+F9 still opens Displays, but its Cmd+P reaches apps; allow rogkeyd in Privacy & Security > Accessibility") }
+        if ask { log("no Accessibility access：Fn+F9 仍会打开显示器设置，但其 Cmd+P 会传给应用；请在「隐私与安全性 › 辅助功能」中允许 rogkeyd") }
         return
     }
     let mask: CGEventMask = (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue) | (1 << CGEventType.flagsChanged.rawValue)
     guard let t = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
-                                    eventsOfInterest: mask, callback: tapCallback, userInfo: nil) else { log("event tap: create failed"); return }
+                                    eventsOfInterest: mask, callback: tapCallback, userInfo: nil) else { log("事件监听创建失败"); return }
     CFRunLoopAddSource(CFRunLoopGetMain(), CFMachPortCreateRunLoopSource(kCFAllocatorDefault, t, 0), .commonModes)
     CGEvent.tapEnable(tap: t, enable: true)
     tap = t
-    log("event tap on: Fn+F9's Cmd+P is dropped")
+    log("event tap on：Fn+F9 的 Cmd+P 将被拦截")
 }
 
 func key(_ code: UInt8) {
-    log(String(format: "key %02x", code))
+    log(String(format: "按键 %02x", code))
     switch code {
     case 0x7C: toggleMic()
     case 0x38: openRogControl()
@@ -176,7 +179,7 @@ let onReport: IOHIDReportCallback = { _, _, _, type, id, report, len in
 var lastGui = false, lastP = false
 func keyboardReport(_ mods: UInt8, _ p: Bool) {
     let gui = mods & 0x88 != 0
-    if gui && p && !lastGui && !lastP && mods & 0x77 == 0 { f9Mark = DispatchTime.now().uptimeNanoseconds; log("key f9 (Win+P)"); openDisplays() }
+    if gui && p && !lastGui && !lastP && mods & 0x77 == 0 { f9Mark = DispatchTime.now().uptimeNanoseconds; log("按键 f9（Win+P）"); openDisplays() }
     lastGui = gui; lastP = p
 }
 var mgr: IOHIDManager?
@@ -199,7 +202,7 @@ func start(_ why: String) {
                opened ? ", reading the N-KEY keyboard" : ""))
     if access != kIOHIDAccessTypeGranted {
         _ = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
-        log("no Input Monitoring access: allow rogkeyd in System Settings > Privacy & Security > Input Monitoring")
+        log("没有「输入监控」权限：请在系统设置 › 隐私与安全性 › 输入监控中允许 rogkeyd")
     }
 }
 start("start")

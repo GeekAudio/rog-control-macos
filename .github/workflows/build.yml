@@ -1,60 +1,54 @@
-name: build
+name: 构建检查
 
-# Builds the AsusWmi and AmdCppc kexts, the RogControl app, rogkeyd and the AmdCppcPolicy daemon (ad-hoc signed), and runs the
-# fan-curve decoding test. A tag "v*" publishes the zips and SHA256SUMS.txt as a GitHub release.
+# 每次推送 main、提交 PR 或手动触发时，编译两个内核扩展、菜单栏应用、Fn 键守护进程与 CPU 策略守护进程，
+# 跑一遍风扇曲线解码测试，并打出 DMG 与各组件 zip 作为临时产物（保留 7 天，不发布）。
+# 正式发布见 release.yml。
 on:
   push:
     branches: [main]
-    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
+    name: 编译并测试
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - name: 检出代码
+        uses: actions/checkout@v4
 
-      - name: Build kexts
+      - name: 显示工具链版本
+        run: |
+          sw_vers
+          swiftc --version
+          xcodebuild -version || true
+
+      - name: 编译内核扩展（AsusWmi、AmdCppc）
         run: bash scripts/build.sh
 
-      - name: Fan-curve decoding test
+      - name: 风扇曲线解码测试
         run: bash scripts/test-rogcontrol.sh
 
-      - name: Build the app, rogkeyd and the CPU policy daemon
+      - name: 编译应用、Fn 键守护进程与 CPU 策略守护进程
         run: |
           bash scripts/build-rogcontrol.sh
           bash scripts/build-rogkeys.sh
           bash scripts/build-amdcppc-policy.sh
 
-      - name: Package
-        run: |
-          mkdir -p dist
-          for k in AsusWmi AmdCppc; do (cd build && zip -qry "../dist/$k.kext.zip" "$k.kext"); done
-          (cd build && zip -qry ../dist/RogControl.app.zip RogControl.app && zip -qry ../dist/rogkeyd.app.zip rogkeyd.app && zip -qj ../dist/AmdCppcPolicy.zip AmdCppcPolicy)
-          cp LICENSE dist/
-          (cd dist && shasum -a 256 *.zip LICENSE > SHA256SUMS.txt)
+      - name: 打包 DMG 与组件压缩包
+        run: bash scripts/package.sh
 
-      - uses: actions/upload-artifact@v4
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
         with:
-          name: rog-control-${{ github.sha }}
+          name: rog-control-cn-${{ github.sha }}
           path: dist/*
-
-  release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: rog-control-${{ github.sha }}
-          path: dist
-      - name: Publish
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" dist/* --repo "${{ github.repository }}" --title "${{ github.ref_name }}" --generate-notes --prerelease
+          retention-days: 7
+          if-no-files-found: error

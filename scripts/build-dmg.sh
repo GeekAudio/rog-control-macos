@@ -24,7 +24,11 @@ tiffutil -cathidpicheck "$WORK/background.png" "$WORK/background@2x.png" -out "$
 
 hdiutil create -quiet -volname "$NAME" -srcfolder "$WORK/stage" -fs HFS+ -format UDRW -ov "$WORK/rw.dmg"
 MNT=$(hdiutil attach "$WORK/rw.dmg" -readwrite -noverify -noautoopen | awk -F'\t' '/\/Volumes\// {print $NF}')
-osascript <<OSA || echo "Finder layout skipped (automation not allowed); the DMG still works" >&2
+# CI 上没有可交互的 Finder 会话，osascript 会卡在自动化授权上：直接跳过窗口布局，DMG 仍然可用
+if [ -n "${CI:-}" ]; then
+  echo "CI: 跳过 Finder 窗口布局（图标位置与背景由脚本外置）" >&2
+else
+osascript <<OSA || echo "Finder 布局已跳过（未获自动化授权）；DMG 仍可正常使用" >&2
 tell application "Finder"
   tell disk "$(basename "$MNT")"
     open
@@ -45,10 +49,11 @@ tell application "Finder"
   end tell
 end tell
 OSA
+fi
 chflags hidden "$MNT/.background" 2>/dev/null || true
 sync
 hdiutil detach "$MNT" -quiet; MNT=""
 rm -f "$OUT"
 hdiutil convert -quiet "$WORK/rw.dmg" -format UDZO -imagekey zlib-level=9 -o "$OUT"
 shasum -a 256 "$OUT" | sed 's#build/##' > "$OUT.sha256"
-echo "built $OUT"; cat "$OUT.sha256"
+echo "已生成 $OUT"; cat "$OUT.sha256"
